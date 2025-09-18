@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>미술 수업 자료 Index</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="./master.css" />
+</head>
+<body>
+  <h1>미술 수업 자료 Index</h1>
+
+  <!-- pywebview 없으면 이 안내만 보입니다 -->
+  <div id="readonlyNote" class="readonly-note hidden">
+    이 페이지는 <b>읽기 전용</b>으로 열렸습니다. 버튼 기능은
+    데스크톱 앱(예: pywebview로 만든 실행 파일)에서만 동작합니다.
+  </div>
+
+  <!-- pywebview에서만 활성화되는 상단 툴바 -->
+  <div id="globalToolbar" class="toolbar">
+    <button id="btnSync" class="btn">🔄 Sync (썸네일/인덱스 갱신)</button>
+    <button id="btnEdit" class="btn">✏️ 편집 모드</button>
+    <button id="btnSaveAll" class="btn" disabled>💾 전체 저장</button>
+    <button id="btnRebuild" class="btn">🧱 마스터 재생성</button>
+    <button id="btnRegenAll" class="btn">🖼️ 썸네일 일괄 갱신</button>
+  </div>
+
+  <!-- 마스터의 실제 콘텐츠가 여기에 로드됨 -->
+  <div id="content"></div>
+
+  <script src="./master.js" defer></script>
+</body>
+</html>

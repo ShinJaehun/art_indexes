@@ -1,0 +1,61 @@
+# -----------------------------
+# Project-specific (핵심)
+# -----------------------------
+
+# 배포/콘텐츠 대용량은 Git에서 제외 (로컬에는 유지)
+resource/*
+!resource/.gitkeep
+
+# 동봉 바이너리(ffmpeg/poppler)는 Git에서 제외
+backend/bin/*
+!backend/bin/.gitkeep
+
+# 과거 스크립트 모음 제외
+old scripts/
+
+# -----------------------------
+# Python
+# -----------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.dylib
+*.egg-info/
+.eggs/
+.mypy_cache/
+.pytest_cache/
+.coverage
+pip-wheel-metadata/
+.build/
+dist/
+build/
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# -----------------------------
+# Frontend / Node (혹시 있을 때)
+# -----------------------------
+node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# -----------------------------
+# OS 잡동사니
+# -----------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# -----------------------------
+# 루트 숨김폴더 무시(필요 설정 파일은 예외)
+# -----------------------------
+.*
+!.gitignore
+!.gitattributes
+!.editorconfig

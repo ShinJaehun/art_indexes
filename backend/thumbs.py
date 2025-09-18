@@ -2,6 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import subprocess, sys, shlex
 import tempfile, os, shutil
+import re, unicodedata
 
 # ANNO: Windows 배포를 전제로 exe 동봉 경로를 우선 탐색하되, PATH에도 의존 가능.
 BASE_DIR = Path(__file__).parent
@@ -14,9 +15,16 @@ PDFINFO_EXE = BIN_DIR / "poppler" / "pdfinfo.exe"  # ← 페이지 수 조회용
 
 
 def _run(cmd: list[str]) -> tuple[int, str, str]:
+    """
+    모든 외부 도구 호출의 출력은 바이너리로 받고, UTF-8로 디코드(errors='ignore').
+    - Windows 로케일(cp949)에서도 멀쩡히 동작
+    - 한글/이모지 등 섞여 있어도 스레드 예외 없이 안전
+    """
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, shell=False)
-        return p.returncode, p.stdout or "", p.stderr or ""
+        p = subprocess.run(cmd, capture_output=True, text=False, shell=False)
+        out = (p.stdout or b"").decode("utf-8", errors="ignore")
+        err = (p.stderr or b"").decode("utf-8", errors="ignore")
+        return p.returncode, out, err
     except FileNotFoundError as e:
         return 127, "", f"FileNotFoundError: {e}"
     except Exception as e:
@@ -26,11 +34,13 @@ def _run(cmd: list[str]) -> tuple[int, str, str]:
 def _safe_name(name: str) -> str:
     # 폴더 → 썸네일 파일명 규칙: 공백은 _ 로, 금지문자는 _ 로
     # HAZARD: build_art_indexes.safe_name과 규칙 차이 주의(일관화 필요). 지금은 변경하지 않음.
+    # 유니코드 표준화(NFKC)로 보기엔 공백인데 다른 문자 문제 완화
+    name = unicodedata.normalize("NFKC", name)
+    # 모든 공백류(스페이스, 탭, NBSP, 얇은공백 등)를 '_'로
+    name = re.sub(r"[\s\u00A0\u202F\u2009\u2007\u2060]+", "_", name)
     out = []
     for c in name:
-        if c in r'\\/:*?"<>|':
-            out.append("_")
-        elif c.isspace():
+        if c in r'\/:*?"<>|':
             out.append("_")
         else:
             out.append(c)
@@ -120,12 +130,19 @@ def make_pdf_thumb(pdf_path: Path, out_jpg: Path, dpi: int = 144) -> bool:
         str(pdf_path),
         str(tmp_prefix),
     ]
+
     rc, _out, err = _run(cmd)
     if rc != 0:
-        print(
-            f"[thumb] PDF->JPG FAIL rc={rc}\nCMD: {shlex.join(cmd)}\nSTDERR:\n{err}",
-            file=sys.stderr,
-        )
+        # ▼ 추가: 암호 문서면 조용히 스킵(로그만 친절히 남김)
+        if "Incorrect password" in err or "password" in err.lower():
+            print(
+                f"[thumb] PDF is password-protected, skip: {pdf_path}", file=sys.stderr
+            )
+        else:
+            print(
+                f"[thumb] PDF->JPG FAIL rc={rc}\nCMD: {shlex.join(cmd)}\nSTDERR:\n{err}",
+                file=sys.stderr,
+            )
         _cleanup_tmp_dir(tmp_dir)
         return False
 
@@ -221,3 +238,36 @@ def make_thumbnail_for_folder(folder: Path, max_width: int = 640) -> bool:
 
     print(f"[thumb] SKIP (no source): {folder.name}")
     return False
+
+
+def _iter_content_folders(resource_dir: Path):
+    """
+    리소스 전체 썸네일 스캔/생성 (HTML 생성 없음)
+    """
+    for p in sorted(Path(resource_dir).iterdir(), key=lambda x: x.name):
+        if not p.is_dir():
+            continue
+        if p.name.startswith("."):
+            continue
+        if p.name.lower() == "thumbs":
+            continue
+        yield p
+
+
+def scan_and_make_thumbs(
+    resource_dir: Path, refresh: bool = True, width: int = 640
+) -> bool:
+    """
+    resource/<폴더>들을 훑어 썸네일만 생성/갱신한다.
+    - HTML 파일은 생성하지 않음(SSOT 안전).
+    - 일부 폴더에 소스가 없어도 전체 작업은 성공(True)로 본다.
+    """
+    resource_dir = Path(resource_dir)
+    any_error = False
+    for folder in _iter_content_folders(resource_dir):
+        try:
+            make_thumbnail_for_folder(folder, max_width=width)
+        except Exception as e:
+            print(f"[thumb] ERROR in {folder.name}: {e}", file=sys.stderr)
+            any_error = True
+    return not any_error

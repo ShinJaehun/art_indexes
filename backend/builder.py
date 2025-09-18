@@ -16,12 +16,24 @@ from thumbs import _safe_name  # ← 추가
 
 
 def run_sync_all(base_dir: Path, resource_dir: Path, thumb_width: int = 640) -> int:
-    # ANNO: base_dir는 스크립트가 있는 루트(backend 옆), resource_dir는 실제 콘텐츠 폴더.
+    """
+    과거: build_art_indexes.py 외부 실행에만 의존
+    지금: 스크립트가 없거나(또는 원하면) 내부 썸네일 스캔으로 폴백
+    """
     script = base_dir / "build_art_indexes.py"
+
+    # 1) 스크립트가 없으면 내부 함수로 썸네일만 처리(HTML 생성 없음)
     if not script.exists():
-        print("❌ build_art_indexes.py not found", file=sys.stderr)
-        return 1
-    # ANNO: resource_dir를 cwd로 설정하여 스크립트 내부의 CWD 기반 경로 탐지를 맞춘다.
+        try:
+            from thumbs import scan_and_make_thumbs
+
+            ok = scan_and_make_thumbs(resource_dir, refresh=True, width=thumb_width)
+            return 0 if ok else 1
+        except Exception as e:
+            print(f"❌ internal thumbnail scan failed: {e}", file=sys.stderr)
+            return 1
+
+    # 2) 스크립트가 있으면 이전처럼 실행(곧 다음 단계에서 제거 예정)
     args = [
         sys.executable,
         str(script),

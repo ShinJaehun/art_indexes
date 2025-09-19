@@ -281,7 +281,10 @@ function wireGlobalToolbar() {
       try {
         const r = await call("sync");
         await loadMaster();
-        alert(r.ok ? "Sync 완료" : "Sync 실패");
+        const detail = (r.scanOk !== undefined && r.pushOk !== undefined)
+          ? `\n(thumbs: ${r.scanOk ? "OK" : "FAIL"}, push: ${r.pushOk ? "OK" : "FAIL"})`
+          : "";
+        alert((r.ok ? "Sync 완료" : "Sync 실패") + detail);
       } catch (e) {
         console.error(e);
         alert("Sync 실패: " + e.message);

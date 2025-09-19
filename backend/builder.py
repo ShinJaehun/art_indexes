@@ -15,34 +15,19 @@ from thumbs import _safe_name  # ← 추가
 # - 리팩토링 시 이 함수는 "콘텐츠만"(예: .inner) 또는 화이트리스트된 태그만 생성하도록 조정 필요. (지금은 주석만)
 
 
-def run_sync_all(base_dir: Path, resource_dir: Path, thumb_width: int = 640) -> int:
+def run_sync_all(resource_dir: Path, thumb_width: int = 640) -> int:
     """
-    과거: build_art_indexes.py 외부 실행에만 의존
-    지금: 스크립트가 없거나(또는 원하면) 내부 썸네일 스캔으로 폴백
+    리소스 전체 썸네일 스캔/생성만 수행(HTML 생성 없음).
+    SSOT: HTML 생성은 MasterApi._push_master_to_resource()만 담당.
     """
-    script = base_dir / "build_art_indexes.py"
+    try:
+        from thumbs import scan_and_make_thumbs
 
-    # 1) 스크립트가 없으면 내부 함수로 썸네일만 처리(HTML 생성 없음)
-    if not script.exists():
-        try:
-            from thumbs import scan_and_make_thumbs
-
-            ok = scan_and_make_thumbs(resource_dir, refresh=True, width=thumb_width)
-            return 0 if ok else 1
-        except Exception as e:
-            print(f"❌ internal thumbnail scan failed: {e}", file=sys.stderr)
-            return 1
-
-    # 2) 스크립트가 있으면 이전처럼 실행(곧 다음 단계에서 제거 예정)
-    args = [
-        sys.executable,
-        str(script),
-        "--refresh-thumbs",
-        "--thumb-width",
-        str(thumb_width),
-    ]
-    result = subprocess.run(args, cwd=str(resource_dir), text=True, shell=False)
-    return result.returncode
+        ok = scan_and_make_thumbs(resource_dir, refresh=True, width=thumb_width)
+        return 0 if ok else 1
+    except Exception as e:
+        print(f"❌ internal thumbnail scan failed: {e}", file=sys.stderr)
+        return 1
 
 
 def rebuild_master_from_sources(resource_dir: Path) -> str:

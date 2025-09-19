@@ -306,13 +306,23 @@ class MasterApi:
         2) 사용자 편집본(master_content.html)을 기준으로 resource 쪽 파일들을 덮어씀(푸시)
         3) (선택) root 표시용 파일(master_content.html)은 그대로 유지
         """
+        # 1) 썸네일 스캔
         code = run_sync_all(
-            base_dir=self._p_base_dir(),
             resource_dir=self._p_resource_dir(),
             thumb_width=640,
         )
-        self._push_master_to_resource()
-        return {"ok": code == 0}
+        scan_ok = code == 0
+
+        # 2) 푸시
+        push_ok = True
+        try:
+            self._push_master_to_resource()
+        except Exception as e:
+            push_ok = False
+            # 실패 원인을 로그로 남겨 두자 (콘솔/pywebview 콘솔에서 확인)
+            print(f"[sync] push failed: {e}")
+
+        return {"ok": (scan_ok and push_ok), "scanOk": scan_ok, "pushOk": push_ok}
 
     # ---- (옵션) 리빌드 → master_content 갱신 ----
     def rebuild_master(self) -> Dict[str, Any]:

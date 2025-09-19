@@ -64,6 +64,111 @@ def _strip_back_to_master(div_html: str) -> str:
     return str(soup)
 
 
+def _inner_without_h2(div_html: str) -> str:
+    """<div class="folder"> 블록에서 <h2>를 제거하고 내부만 반환한다."""
+    if BeautifulSoup is None:
+        # 정규식 폴백(간이)
+        html = re.sub(r"<h2[^>]*>.*?</h2>", "", div_html, flags=re.I | re.S)
+        m = re.search(
+            r'<div class="folder"[^>]*>(.*)</div>\s*$', html, flags=re.I | re.S
+        )
+        return m.group(1).strip() if m else html
+    soup = BeautifulSoup(div_html, "html.parser")
+    root = soup.find("div", class_="folder") or soup
+    h2 = root.find("h2")
+    if h2:
+        h2.decompose()
+    return "".join(str(x) for x in root.contents).strip()
+
+
+def _clean_for_publish(div_html: str) -> str:
+    """
+    편집용 DOM(div.folder)을 배포용으로 정화한다.
+    - 제거: .folder-actions, .btn* 요소, contenteditable/draggable, 모든 on* 이벤트, data-* 속성, style
+    - 화이트리스트: 태그/속성 제한 (img/a 중심)
+    - 주의: master_content.html 자체는 수정하지 않고, 출력용 변환에만 사용
+    """
+    if BeautifulSoup is None:
+        # 폴백(간소): 가장 위험한 것들만 제거
+        html = re.sub(
+            r'<[^>]+class="[^"]*\bfolder-actions\b[^"]*"[^>]*>.*?</[^>]+>',
+            "",
+            div_html,
+            flags=re.I | re.S,
+        )
+        html = re.sub(
+            r'<[^>]+class="[^"]*\bbtn[^"]*"[^>]*>.*?</[^>]+>',
+            "",
+            html,
+            flags=re.I | re.S,
+        )
+        # 속성류 제거
+        html = re.sub(r'\scontenteditable="[^"]*"', "", html, flags=re.I)
+        html = re.sub(r'\sdraggable="[^"]*"', "", html, flags=re.I)
+        html = re.sub(r'\sdata-[\w-]+="[^"]*"', "", html, flags=re.I)
+        html = re.sub(
+            r'\son[a-zA-Z]+\s*=\s*"[^"]*"', "", html, flags=re.I
+        )  # onClick 등
+        html = re.sub(r'\sstyle="[^"]*"', "", html, flags=re.I)
+        return html
+
+    soup = BeautifulSoup(div_html, "html.parser")
+
+    # 1) 제어 UI 제거
+    for n in soup.select('.folder-actions, .btn, [class^="btn"]'):
+        n.decompose()
+
+    # 2) 속성 정리 + 태그 화이트리스트
+    allowed_tags = {
+        "div",
+        "p",
+        "img",
+        "a",
+        "ul",
+        "ol",
+        "li",
+        "br",
+        "h2",
+        "h3",
+        "h4",
+        "span",
+        "strong",
+        "em",
+    }
+    allowed_attrs = {
+        "img": {"src", "alt", "title", "width", "height"},
+        "a": {"href", "title", "target", "rel"},
+        # 나머지는 최소화(필요 시 확장)
+    }
+
+    for tag in list(soup.find_all(True)):
+        # 이벤트/데이터/편집 속성 제거(전 태그 공통)
+        bad_attrs = []
+        for attr in list(tag.attrs.keys()):
+            if attr.lower().startswith("on"):  # onClick 등
+                bad_attrs.append(attr)
+            if attr.lower().startswith("data-"):  # data-*
+                bad_attrs.append(attr)
+            if attr.lower() in ("contenteditable", "draggable", "style"):
+                bad_attrs.append(attr)
+        for a in bad_attrs:
+            tag.attrs.pop(a, None)
+
+        # 태그 화이트리스트 적용
+        if tag.name not in allowed_tags:
+            tag.unwrap()
+            continue
+
+        # 태그별 허용 속성만 유지
+        if tag.name in allowed_attrs:
+            keep = allowed_attrs[tag.name]
+            for a in list(tag.attrs.keys()):
+                if a not in keep and a != "class":  # class는 CSS 위해 허용
+                    tag.attrs.pop(a, None)
+
+    return str(soup)
+
+
 def _adjust_paths_for_folder(
     div_html: str, folder: str, *, for_resource_master: bool = False
 ) -> str:
@@ -173,7 +278,7 @@ def _build_master_from_blocks(blocks_html: list[str]) -> str:
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>미술 수업 자료 Index</title>
-  <link rel="stylesheet" href="master.css" />
+  <link rel="stylesheet" href="../master.css" />
   <script defer src="../master.js"></script>
 </head>
 <body>
@@ -280,8 +385,11 @@ class MasterApi:
                 continue
             folder = h2.get_text(strip=True)
 
+            # 배포용 정화본 생성(원본 div는 건드리지 않음)
+            cleaned_div_html = _clean_for_publish(str(div))
+
             # 1) 마스터용 블록
-            div_for_master = _strip_back_to_master(str(div))
+            div_for_master = _strip_back_to_master(cleaned_div_html)
             # ★ master_index 관점으로 경로 치환
             div_for_master = _adjust_paths_for_folder(
                 div_for_master, folder, for_resource_master=True
@@ -289,8 +397,16 @@ class MasterApi:
             blocks_for_master.append(div_for_master)
 
             # 2) 폴더 index.html용 (옵션 False)
+            # inner_for_folder = _adjust_paths_for_folder(
+            #     cleaned_div_html, folder, for_resource_master=False
+            # )
+            # folder_html = _wrap_folder_index(folder, inner_for_folder)
+            # self._write(self._p_resource_dir() / folder / FOLDER_INDEX, folder_html)
+
+            # --- 폴더 index.html용: h2 제거한 '내부만' 사용 ---
+            inner_only = _inner_without_h2(cleaned_div_html)
             inner_for_folder = _adjust_paths_for_folder(
-                str(div), folder, for_resource_master=False
+                inner_only, folder, for_resource_master=False
             )
             folder_html = _wrap_folder_index(folder, inner_for_folder)
             self._write(self._p_resource_dir() / folder / FOLDER_INDEX, folder_html)

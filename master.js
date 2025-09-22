@@ -74,31 +74,46 @@ function enhanceBlocks() {
   $$(".folder").forEach(div => {
     if (div.__enhanced) return;
 
-    if (!div.querySelector(".folder-head")) {
-      const h2 = $("h2", div);
-      if (!h2) return;
-
-      const head = document.createElement("div");
-      head.className = "folder-head";
-      h2.replaceWith(head);
-      head.appendChild(h2);
-
-      const actions = document.createElement("div");
-      actions.className = "folder-actions" + (hasBridge ? "" : " hidden");
-      actions.innerHTML = `
-        <button class="btn btnEditOne">편집</button>
-        <button class="btn btnSaveOne" disabled>저장</button>
-        <button class="btn btnThumb">썸네일 갱신</button>
-      `;
-      head.appendChild(actions);
-
-      // 1) 썸네일 영역은 편집영역 밖(HEAD)에 고정
-      let thumbWrap = div.querySelector(".thumb-wrap");
+    // 헬퍼: head 내부를 h2 → actions → thumb-wrap 순서로 정렬
+    function normalizeHead(headEl) {
+      const h2 = $("h2", headEl);
+      let actions = $(".folder-actions", headEl);
+      let thumbWrap = $(".thumb-wrap", headEl);
+      if (!actions) {
+        actions = document.createElement("div");
+        actions.className = "folder-actions" + (hasBridge ? "" : " hidden");
+        actions.innerHTML = `
+          <button class="btn btnEditOne">편집</button>
+          <button class="btn btnSaveOne" disabled>저장</button>
+          <button class="btn btnThumb">썸네일 갱신</button>
+        `;
+      }
       if (!thumbWrap) {
         thumbWrap = document.createElement("div");
         thumbWrap.className = "thumb-wrap";
-        head.appendChild(thumbWrap);
       }
+      // 순서 강제: h2 → actions → thumb-wrap
+      // (appendChild는 이미 있는 노드를 이동시킴)
+      if (h2) headEl.appendChild(h2);
+      headEl.appendChild(actions);
+      headEl.appendChild(thumbWrap);
+      return { actions, thumbWrap };
+    }
+
+    const hasHead = !!div.querySelector(".folder-head");
+    if (!hasHead) {
+      const h2 = $("h2", div);
+      if (!h2) return;
+      
+      const head = document.createElement("div");
+      head.className = "folder-head";
+      h2.replaceWith(head);
+      
+      head.appendChild(h2);
+      normalizeHead(head);
+
+      // 1) 썸네일 영역은 편집영역 밖(HEAD)에 고정
+      let thumbWrap = $(".thumb-wrap", head);
 
       // 2) head 다음 형제들 중 썸네일 후보는 먼저 thumb-wrap으로 이동
       {
@@ -137,6 +152,10 @@ function enhanceBlocks() {
       if (stray) {
         thumbWrap.appendChild(stray);
       }
+    } else {
+      // 이미 head가 있는 카드: actions가 없으면 보강(중복 생성 방지)
+      const head = $(".folder-head", div);
+      normalizeHead(head);
     }
 
     // 5) 제목/썸네일은 항상 편집 제외

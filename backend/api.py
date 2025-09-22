@@ -3,6 +3,8 @@ from typing import Dict, Any, Union
 import re
 
 from thumbs import make_thumbnail_for_folder
+from thumbs import _safe_name as _thumb_safe_name
+
 from builder import run_sync_all, rebuild_master_from_sources
 
 try:
@@ -18,7 +20,9 @@ FOLDER_INDEX = "index.html"
 _BODY_RE = re.compile(r"<body[^>]*>([\s\S]*?)</body>", re.IGNORECASE)
 # ANNO: resource 접두어를 붙이지 않을 예외 접두사.
 # HAZARD: mailto:, data:, tel: 등은 여기에 포함되어 있지 않다 → 예외 케이스 추가 여지.
-_SKIP_PREFIX = re.compile(r"^(https?://|/|\.\./|#|resource/)", re.IGNORECASE)
+_SKIP_PREFIX = re.compile(
+    r"^(https?://|/|\.\./|#|resource/|mailto:|tel:|data:)", re.IGNORECASE
+)
 
 
 # -------- 유틸 --------
@@ -278,14 +282,198 @@ def _build_master_from_blocks(blocks_html: list[str]) -> str:
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>미술 수업 자료 Index</title>
-  <link rel="stylesheet" href="../master.css" />
-  <script defer src="../master.js"></script>
+  <link rel="stylesheet" href="master.css" />
 </head>
 <body>
   <h1>미술 수업 자료 Index</h1>
 """
     tail = "\n</body>\n</html>"
     return head + "\n".join(blocks_html) + tail
+
+
+def _make_clean_block_html_for_master(folder: str, resource_dir: Path) -> str:
+    """
+    master_content.html에 삽입할 '깨끗한 기본 카드' HTML 문자열을 만든다.
+    - .folder-head/h2
+    - .thumb-wrap (있으면 썸네일 img 1장)
+    - .inner (비어 있음)
+    """
+    safe = _thumb_safe_name(folder)
+    thumb_path = resource_dir / folder / "thumbs" / f"{safe}.jpg"
+    thumb_html = (
+        f"""
+      <div class="thumb-wrap">
+        <img class="thumb" src="resource/{folder}/thumbs/{safe}.jpg" alt="썸네일" />
+      </div>"""
+        if thumb_path.exists()
+        else """<div class="thumb-wrap"></div>"""
+    )
+    return f"""
+<div class="folder" data-folder="{folder}">
+  <div class="folder-head">
+    <h2>{folder}</h2>
+    {thumb_html}
+  </div>
+  <div class="inner">
+    <!-- 새 폴더 기본 본문 -->
+  </div>
+</div>""".strip()
+
+
+def _ensure_thumb_in_head(div_html: str, folder: str, resource_dir: Path) -> str:
+    """
+    div.folder HTML에서 .folder-head 내부의 .thumb-wrap이 비어 있으면,
+    파일시스템에 존재하는 대표 썸네일을 자동 삽입한다.
+    (발행 직전 안전망)
+    """
+    if BeautifulSoup is None:
+        # bs4 없으면 보강 불가 — 그대로 반환
+        return div_html
+
+    soup = BeautifulSoup(div_html, "html.parser")
+    head = soup.select_one(".folder-head") or soup
+    tw = head.select_one(".thumb-wrap")
+    if not tw:
+        tw = soup.new_tag("div", **{"class": "thumb-wrap"})
+        head.append(tw)
+
+    has_img = bool(tw.find("img"))
+    if not has_img:
+        safe = _thumb_safe_name(folder)
+        jpg = resource_dir / folder / "thumbs" / f"{safe}.jpg"
+        if jpg.exists():
+            img = soup.new_tag(
+                "img",
+                **{
+                    "class": "thumb",
+                    "src": f"resource/{folder}/thumbs/{safe}.jpg",
+                    "alt": "썸네일",
+                },
+            )
+            tw.append(img)
+    return str(soup)
+
+
+def _inject_thumbs_for_preview(html: str, resource_dir: Path) -> str:
+    """
+    webview 편집 화면에 뿌릴 때만 사용하는 미리보기 보강.
+    - 각 .folder의 .thumb-wrap이 비어 있으면 파일시스템에 있는 썸네일 <img>를 주입한다.
+    - master_content.html 파일은 수정하지 않음(미리보기 렌더링에만 사용).
+    """
+    if BeautifulSoup is None:
+        return html
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    for div in soup.find_all("div", class_="folder"):
+        h2 = div.find("h2")
+        if not h2:
+            continue
+        folder = (h2.get_text() or "").strip()
+        if not folder:
+            continue
+
+        head = div.find(class_="folder-head") or div
+        tw = head.find(class_="thumb-wrap")
+        if not tw:
+            tw = soup.new_tag("div", **{"class": "thumb-wrap"})
+            head.append(tw)
+
+        if tw.find("img"):
+            continue  # 이미 있음
+
+        safe = _thumb_safe_name(folder)
+        jpg = resource_dir / folder / "thumbs" / f"{safe}.jpg"
+        if jpg.exists():
+            img = soup.new_tag(
+                "img",
+                **{
+                    "class": "thumb",
+                    "src": f"resource/{folder}/thumbs/{safe}.jpg",
+                    "alt": "썸네일",
+                },
+            )
+            tw.append(img)
+
+    return str(soup)
+
+
+def _persist_thumbs_in_master(html: str, resource_dir: Path) -> str:
+    """
+    저장 직전에 master_content.html에 '썸네일 이미지를 영구 반영'한다.
+    - 각 .folder의 .folder-head/.thumb-wrap을 보정하고,
+    - 파일시스템에 썸네일이 있으면 <img class="thumb" ...>를 1개 채워 넣는다.
+    - 불필요한 편집 속성(draggable, contenteditable 등)은 제거.
+    """
+    if BeautifulSoup is None:
+        return html
+
+    soup = BeautifulSoup(html or "", "html.parser")
+
+    for div in soup.find_all("div", class_="folder"):
+        # 0) 제목(폴더명)
+        h2 = div.find("h2")
+        if not h2:
+            continue
+        folder = (h2.get_text() or "").strip()
+        if not folder:
+            continue
+
+        # 1) head normalize: 없으면 만들고, 순서를 h2 -> thumb-wrap로 정돈
+        head = div.find(class_="folder-head")
+        if not head:
+            head = soup.new_tag("div", **{"class": "folder-head"})
+            # h2를 head 안으로 이동
+            h2.replace_with(head)
+            head.append(h2)
+
+        tw = head.find(class_="thumb-wrap")
+        if not tw:
+            tw = soup.new_tag("div", **{"class": "thumb-wrap"})
+            head.append(tw)
+
+        # 2) .inner 안/주변에서 흩어진 썸네일 이미지가 있으면 head로 이동
+        #    (src에 /thumbs/ 포함 혹은 class="thumb" 혹은 alt="썸네일")
+        candidates = []
+        for img in div.find_all("img"):
+            src = img.get("src", "")
+            if img is tw.find("img"):
+                continue
+            if (
+                "thumbs/" in src
+                or "thumb" in (img.get("class") or [])
+                or img.get("alt", "") == "썸네일"
+            ):
+                candidates.append(img)
+        if candidates and not tw.find("img"):
+            # 첫 후보만 사용
+            tw.append(candidates[0])
+
+        # 3) 파일시스템 기준으로 최종 보강 (없으면 새로 삽입)
+        if not tw.find("img"):
+            safe = _thumb_safe_name(folder)
+            jpg = resource_dir / folder / "thumbs" / f"{safe}.jpg"
+            if jpg.exists():
+                img = soup.new_tag(
+                    "img",
+                    **{
+                        "class": "thumb",
+                        "src": f"resource/{folder}/thumbs/{safe}.jpg",
+                        "alt": "썸네일",
+                    },
+                )
+                tw.append(img)
+
+        # 4) 편집용 속성 정리
+        for el in [div, head, tw] + list(div.find_all(True)):
+            if hasattr(el, "attrs"):
+                el.attrs.pop("contenteditable", None)
+                el.attrs.pop("draggable", None)
+                # serializeMaster가 붙였을 수 있는 임시 클래스 제거
+                cls = el.get("class")
+                if cls:
+                    el["class"] = [c for c in cls if c != "editable"]
+
+    return str(soup)
 
 
 # -------- 메인 API --------
@@ -344,66 +532,83 @@ class MasterApi:
         resource_master = self._p_resource_master()
 
         if master_file.exists():
-            return {"html": self._read(master_file)}
+            raw = self._read(master_file)
+            # ✅ 편집 화면 표시용으로만 썸네일 주입 (파일은 수정하지 않음)
+            html_for_view = (
+                _inject_thumbs_for_preview(raw, self._p_resource_dir())
+                if BeautifulSoup is not None
+                else raw
+            )
+            return {"html": html_for_view}
 
         if resource_master.exists():
             inner = _extract_body_inner(self._read(resource_master))
             inner = _prefix_resource_paths_for_root(inner)
             self._write(master_file, inner)
-            return {"html": inner}
+            # 초기화 직후에도 미리보기 주입
+            html_for_view = (
+                _inject_thumbs_for_preview(inner, self._p_resource_dir())
+                if BeautifulSoup is not None
+                else inner
+            )
+            return {"html": html_for_view}
 
         return {"html": ""}
 
     def save_master(self, html: str) -> Dict[str, Any]:
         """편집 저장: master_content.html만 갱신(사용자 작성 HTML 그대로 저장)"""
-        self._write(self._p_master_file(), html)
+        # ✅ 저장 전에 썸네일/헤더 보정 → 파일에도 영구 반영
+        fixed = _persist_thumbs_in_master(html, self._p_resource_dir())
+        self._write(self._p_master_file(), fixed)
         return {"ok": True}
 
     # ---- 푸시: master_content → resource/*.html ----
-    def _push_master_to_resource(self) -> None:
+    def _push_master_to_resource(self) -> int:
         """
         master_content.html을 소스로 삼아
         - resource/master_index.html
         - resource/<폴더>/index.html
         을 직접 생성/덮어쓴다.
+        반환: 처리한 folder 블록 수
         """
         html = self._read(self._p_master_file())
         if not html:
-            return
+            print("[push] no master_content.html, skip")
+            return 0
+
         if BeautifulSoup is None:
-            # bs4 없으면 안전망: 중앙 master만 덮어씀(폴더별 반영은 skip)
             inner = _extract_body_inner(html)
             self._write(self._p_resource_master(), _build_master_from_blocks([inner]))
-            return
+            print("[push] bs4 missing, only wrote master_index.html (blocks=1)")
+            return 1
 
         soup = BeautifulSoup(html, "html.parser")
         blocks_for_master: list[str] = []
+        block_count = 0
+        resource_dir = self._p_resource_dir()
 
         for div in soup.find_all("div", class_="folder"):
             h2 = div.find("h2")
             if not h2:
                 continue
             folder = h2.get_text(strip=True)
+            block_count += 1
 
-            # 배포용 정화본 생성(원본 div는 건드리지 않음)
             cleaned_div_html = _clean_for_publish(str(div))
+
+            # ✅ 썸네일 자동 보강: thumb-wrap이 비면 파일시스템 기반으로 채워 넣기
+            cleaned_div_html = _ensure_thumb_in_head(
+                cleaned_div_html, folder, resource_dir
+            )
 
             # 1) 마스터용 블록
             div_for_master = _strip_back_to_master(cleaned_div_html)
-            # ★ master_index 관점으로 경로 치환
             div_for_master = _adjust_paths_for_folder(
                 div_for_master, folder, for_resource_master=True
             )
             blocks_for_master.append(div_for_master)
 
-            # 2) 폴더 index.html용 (옵션 False)
-            # inner_for_folder = _adjust_paths_for_folder(
-            #     cleaned_div_html, folder, for_resource_master=False
-            # )
-            # folder_html = _wrap_folder_index(folder, inner_for_folder)
-            # self._write(self._p_resource_dir() / folder / FOLDER_INDEX, folder_html)
-
-            # --- 폴더 index.html용: h2 제거한 '내부만' 사용 ---
+            # 2) 폴더 index.html용
             inner_only = _inner_without_h2(cleaned_div_html)
             inner_for_folder = _adjust_paths_for_folder(
                 inner_only, folder, for_resource_master=False
@@ -411,9 +616,11 @@ class MasterApi:
             folder_html = _wrap_folder_index(folder, inner_for_folder)
             self._write(self._p_resource_dir() / folder / FOLDER_INDEX, folder_html)
 
-        # 3) resource/master_index.html 갱신
         master_html = _build_master_from_blocks(blocks_for_master)
         self._write(self._p_resource_master(), master_html)
+
+        print(f"[push] blocks={block_count} ok=True")
+        return block_count
 
     # ---- 동기화 ----
     def sync(self) -> Dict[str, Any]:
@@ -422,22 +629,38 @@ class MasterApi:
         2) 사용자 편집본(master_content.html)을 기준으로 resource 쪽 파일들을 덮어씀(푸시)
         3) (선택) root 표시용 파일(master_content.html)은 그대로 유지
         """
+        base = self._p_base_dir()
+        resource = self._p_resource_dir()
+        print(f"[sync] start base={base} resource={resource}")
+
         # 1) 썸네일 스캔
         code = run_sync_all(
             resource_dir=self._p_resource_dir(),
             thumb_width=640,
         )
         scan_ok = code == 0
+        print(f"[scan] ok={scan_ok} rc={code}")
 
-        # 2) 푸시
-        push_ok = True
+        # 2) 신규 폴더를 master_content에 자동 머지
         try:
-            self._push_master_to_resource()
+            added = self._ensure_new_folders_in_master()
+        except Exception as e:
+            added = -1
+            print(f"[merge] failed: {e}")
+
+        # 3) 푸시
+        push_ok = True
+        block_count = 0
+        try:
+            block_count = self._push_master_to_resource()
         except Exception as e:
             push_ok = False
             # 실패 원인을 로그로 남겨 두자 (콘솔/pywebview 콘솔에서 확인)
-            print(f"[sync] push failed: {e}")
+            print(f"[push] failed: {e}")
 
+        print(
+            f"[sync] done ok={(scan_ok and push_ok)} scanOk={scan_ok} pushOk={push_ok} blocks={block_count}"
+        )
         return {"ok": (scan_ok and push_ok), "scanOk": scan_ok, "pushOk": push_ok}
 
     # ---- (옵션) 리빌드 → master_content 갱신 ----
@@ -459,3 +682,57 @@ class MasterApi:
         folder = self._p_resource_dir() / folder_name
         ok = make_thumbnail_for_folder(folder, max_width=width)
         return {"ok": ok}
+
+    def _ensure_new_folders_in_master(self) -> int:
+        """
+        resource/<폴더> 중 master_content.html에 카드가 없는 폴더를
+        '깨끗한 기본 카드'로 자동 추가한다.
+        반환: 추가된 카드 개수
+        """
+        if BeautifulSoup is None:
+            # 편집본 병합은 bs4 의존 — 없으면 스킵
+            print("[merge] bs4 missing; skip adding new folders")
+            return 0
+
+        master_file = self._p_master_file()
+        resource_dir = self._p_resource_dir()
+
+        html = self._read(master_file)
+        soup = BeautifulSoup(html or "", "html.parser")
+
+        # 현재 master에 존재하는 폴더 이름 수집 (h2 텍스트 기준)
+        existing: set[str] = set()
+        for div in soup.find_all("div", class_="folder"):
+            h2 = div.find("h2")
+            if h2:
+                name = (h2.get_text() or "").strip()
+                if name:
+                    existing.add(name)
+
+        # 파일시스템의 폴더 수집
+        fs_folders: list[str] = []
+        for p in sorted(resource_dir.iterdir(), key=lambda x: x.name):
+            if not p.is_dir():
+                continue
+            if p.name.startswith(".") or p.name.lower() == "thumbs":
+                continue
+            fs_folders.append(p.name)
+
+        # master에 없는 폴더만 추가할 블록 생성
+        new_blocks: list[str] = []
+        for folder in fs_folders:
+            if folder not in existing:
+                new_blocks.append(
+                    _make_clean_block_html_for_master(folder, resource_dir)
+                )
+
+        if not new_blocks:
+            return 0
+
+        # soup를 건드리지 않고 원문 텍스트 뒤에 문자열로 덧붙여, fragment 특성 유지
+        new_html = (html or "").rstrip() + "\n\n" + "\n\n".join(new_blocks) + "\n"
+        self._write(master_file, new_html)
+        print(
+            f"[merge] added={len(new_blocks)} folders: {', '.join([f for f in fs_folders if f not in existing])}"
+        )
+        return len(new_blocks)

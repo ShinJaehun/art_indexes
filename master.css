@@ -93,3 +93,11 @@ img { max-width: 300px; display: block; margin: 10px 0; }
   border-radius: 8px;
   margin: 8px 0 18px;
 }
+
+.status { padding: .6rem .8rem; border-radius: .5rem; margin: .6rem 0; font-size: .95rem; }
+.status.hidden, .status-details.hidden { display: none; }
+.status--ok    { background: #e8fff0; border: 1px solid #9ad3ae; }
+.status--warn  { background: #fff8e6; border: 1px solid #e6c98e; }
+.status--error { background: #ffecec; border: 1px solid #e39b9b; }
+.status-details { padding-left: .25rem; }
+.status-details ul { margin: .25rem 0 0 .9rem; }

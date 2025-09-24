@@ -4,6 +4,125 @@ const $$ = (s, el = document) => Array.from(el.querySelectorAll(s));
 
 let hasBridge = false;
 let _toolbarWired = false;
+let _statusTimer = null;
+
+// ---- Status UI helpers -------------------------------------------------
+function ensureStatusUI() {
+  let bar = $("#statusBar");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "statusBar";
+    bar.className = "status hidden"; // CSS: .status{padding:.6rem;border-radius:.5rem;margin:.5rem 0}
+    // CSS 예: .status--ok{background:#e8fff0;border:1px solid #9ad3ae}
+    //         .status--warn{background:#fff8e6;border:1px solid #e6c98e}
+    //         .status--error{background:#ffecec;border:1px solid #e39b9b}
+    $("#content").insertAdjacentElement("beforebegin", bar);
+  }
+
+  let details = $("#statusDetails");
+  if (!details) {
+    details = document.createElement("div");
+    details.id = "statusDetails";
+    details.className = "status-details hidden";
+    // CSS 예: .status-details{font-size:.95rem;margin:.25rem 0 1rem}
+    bar.insertAdjacentElement("afterend", details);
+  }
+  return { bar, details };
+}
+
+function clearStatus() {
+  if (_statusTimer) { clearTimeout(_statusTimer); _statusTimer = null; }
+  const { bar, details } = ensureStatusUI();
+  bar.className = "status hidden";
+  bar.textContent = "";
+  details.className = "status-details hidden";
+  details.innerHTML = "";
+}
+
+function showStatus({ level, title, lines = [], errors = [], metrics = null, autoHideMs = null }) {
+  // 기존 타이머가 있으면 먼저 클리어
+  if (_statusTimer) { clearTimeout(_statusTimer); _statusTimer = null; }
+
+  const { bar, details } = ensureStatusUI();
+
+  bar.className = `status status--${level || "ok"}`;
+  bar.innerHTML = `<strong>${title || ""}</strong>`;
+  bar.classList.remove("hidden");
+
+  const parts = [];
+  if (metrics) {
+    const mm = [];
+    if (metrics.blocksUpdated != null) mm.push(`반영 ${metrics.blocksUpdated}건`);
+    if (metrics.foldersAdded != null && metrics.foldersAdded > 0) mm.push(`신규 ${metrics.foldersAdded}건`);
+    if (metrics.durationMs != null) mm.push(`${metrics.durationMs}ms`);
+    if (mm.length) parts.push(mm.join(" · "));
+  }
+  if (Array.isArray(lines) && lines.length) parts.push(...lines);
+  if (Array.isArray(errors) && errors.length) {
+    parts.push(`<details open><summary>오류 ${errors.length}개</summary><ul>` +
+      errors.map(e => `<li>${e}</li>`).join("") + `</ul></details>`);
+  }
+
+  if (parts.length) {
+    details.innerHTML = parts.map(p => `<div>${p}</div>`).join("");
+    details.classList.remove("hidden");
+  } else {
+    details.classList.add("hidden");
+    details.innerHTML = "";
+  }
+
+  // ✅ auto-hide: ms 지정 시 그 시간 후 자동으로 감춤
+  if (typeof autoHideMs === "number" && autoHideMs > 0) {
+    _statusTimer = setTimeout(() => {
+      _statusTimer = null;
+      clearStatus();
+    }, autoHideMs);
+  }
+}
+
+function renderSyncResult(r) {
+  const lines = [
+    `썸네일 스캔: ${r.scanOk ? "OK" : "FAIL"}`,
+    `파일 반영: ${r.pushOk ? "OK" : "FAIL"}`
+  ];
+
+  // 순수 성공(둘 다 OK, 에러 없음) → 플래시
+  const pureOk = r.ok && r.scanOk && r.pushOk && (!r.errors || r.errors.length === 0);
+
+  if (pureOk) {
+    showStatus({
+      level: "ok",
+      title: "동기화 완료",
+      lines,
+      errors: [],
+      metrics: r.metrics || null,
+      autoHideMs: 2500,         // ✅ 성공은 자동 숨김
+    });
+    return;
+  }
+
+  // 부분 성공(경고 표시, 유지)
+  if (r.ok) {
+    showStatus({
+      level: "warn",
+      title: "동기화 부분 완료",
+      lines,
+      errors: r.errors || [],
+      metrics: r.metrics || null,
+      // autoHide 없음 → 남겨둠
+    });
+    return;
+  }
+
+  // 실패(유지)
+  showStatus({
+    level: "error",
+    title: "동기화 실패",
+    lines,
+    errors: r.errors || [],
+    metrics: r.metrics || null,
+  });
+}
 
 function detectBridge() {
   hasBridge = !!(window.pywebview && window.pywebview.api);
@@ -68,6 +187,7 @@ async function loadMaster() {
   }
   enhanceBlocks();
   wireGlobalToolbar();
+  clearStatus(); 
 }
 
 function enhanceBlocks() {
@@ -200,14 +320,14 @@ function enhanceBlocks() {
       btnSaveOne.disabled = true;
       try {
         await call("save_master", serializeMaster());
-        alert("저장 완료");
+        showStatus({ level: "ok", title: "저장 완료", autoHideMs: 1800 });
         inner.contentEditable = "false";
         inner.classList.remove("editable");
         btnEditOne.disabled = false;
         btnSaveOne.disabled = true;
       } catch (e) {
         console.error(e);
-        alert("저장 실패");
+        showStatus({ level: "error", title: "저장 실패", lines: [String(e?.message || e)] });
         // 실패 시 다시 저장 시도 가능하도록 복구
         btnSaveOne.disabled = false;
       }
@@ -217,11 +337,19 @@ function enhanceBlocks() {
     btnThumb.onclick = async () => {
       if (!hasBridge) return alert("데스크톱 앱에서만 가능합니다.");
       btnThumb.disabled = true;
+
+      showStatus({ level: "warn", title: "썸네일 갱신 중…", lines: [`${folder}`] });
+
       try {
-        const r = await call("refresh_thumb", folder, 640);
-        alert(r.ok ? "썸네일 갱신 완료" : "썸네일 생성 실패(소스/의존성 확인)");
+        const r = await call("refresh_thumb", folder, 640); // {ok, error?}
+        if (r?.ok) {
+          showStatus({ level: "ok", title: "썸네일 갱신 완료", lines: [folder], autoHideMs: 1800 });
+        } else {
+          const hint = r?.error ? [r.error] : ["소스 이미지 없음 또는 변환 실패"];
+          showStatus({ level: "error", title: "썸네일 갱신 실패", lines: [folder], errors: hint });
+        }
       } catch (e) {
-        console.error(e); alert("실패");
+        showStatus({ level: "error", title: "썸네일 갱신 예외", lines: [folder], errors: [String(e?.message || e)] });
       } finally {
         btnThumb.disabled = false;
       }
@@ -297,16 +425,21 @@ function wireGlobalToolbar() {
     btnSync.addEventListener("click", async () => {
       if (!hasBridge) return alert("데스크톱 앱에서 실행하세요.");
       btnSync.disabled = true;
+
+      // 진행중 표시
+      showStatus({ level: "warn", title: "동기화 중…", lines: ["잠시만 기다려주세요."] });
+
       try {
-        const r = await call("sync");
-        await loadMaster();
-        const detail = (r.scanOk !== undefined && r.pushOk !== undefined)
-          ? `\n(thumbs: ${r.scanOk ? "OK" : "FAIL"}, push: ${r.pushOk ? "OK" : "FAIL"})`
-          : "";
-        alert((r.ok ? "Sync 완료" : "Sync 실패") + detail);
+        const r = await call("sync");       // {ok, scanOk, pushOk, errors, metrics}
+        await loadMaster();                 // 최신 내용 다시 로드 (상태바는 유지됨)
+        renderSyncResult(r);                // 상태바 업데이트
       } catch (e) {
         console.error(e);
-        alert("Sync 실패: " + e.message);
+        showStatus({
+          level: "error",
+          title: "동기화 호출 실패",
+          lines: [String(e?.message || e)]
+        });
       } finally {
         btnSync.disabled = false;
       }
@@ -369,7 +502,7 @@ function wireGlobalToolbar() {
       btnSaveAll.disabled = true;
       try {
         await call("save_master", serializeMaster());
-        alert("전체 저장 완료");
+        showStatus({ level: "ok", title: "전체 저장 완료", autoHideMs: 2000 });
         // 편집 종료
         $$(".folder .inner").forEach(inner => {
           inner.contentEditable = "false";
@@ -378,7 +511,8 @@ function wireGlobalToolbar() {
         btnEditAll.disabled = false;
         btnSaveAll.disabled = true;
       } catch (e) {
-        console.error(e); alert("저장 실패");
+        console.error(e);
+        showStatus({ level: "error", title: "저장 실패", lines: [String(e?.message || e)] });
         btnSaveAll.disabled = false;
       }
     });

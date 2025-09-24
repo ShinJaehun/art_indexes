@@ -1,6 +1,9 @@
 from pathlib import Path
 from typing import Dict, Any, Union
+
 import re
+import time
+import os  # fail test 직후 삭제
 
 from thumbs import make_thumbnail_for_folder
 from thumbs import _safe_name as _thumb_safe_name
@@ -627,41 +630,86 @@ class MasterApi:
         """
         1) 리소스 스캔/썸네일 등 기계 작업 실행
         2) 사용자 편집본(master_content.html)을 기준으로 resource 쪽 파일들을 덮어씀(푸시)
-        3) (선택) root 표시용 파일(master_content.html)은 그대로 유지
+        3) 결과를 {ok, scanOk, pushOk, errors, metrics}로 세분화해 반환
         """
+        t0 = time.perf_counter()
         base = self._p_base_dir()
         resource = self._p_resource_dir()
         print(f"[sync] start base={base} resource={resource}")
 
-        # 1) 썸네일 스캔
-        code = run_sync_all(
+        errors: list[str] = []
+        metrics: Dict[str, Any] = {
+            "foldersAdded": 0,  # master_content에 자동 추가된 새 폴더 수
+            "blocksUpdated": 0,  # 푸시된 folder 블록 수
+            "scanRc": None,  # run_sync_all의 반환 코드(참고용)
+            "durationMs": None,  # 전체 소요 시간(ms)
+        }
+
+        # 1) 썸네일/리소스 스캔
+        scan_rc = run_sync_all(
             resource_dir=self._p_resource_dir(),
             thumb_width=640,
         )
-        scan_ok = code == 0
-        print(f"[scan] ok={scan_ok} rc={code}")
+        scan_ok = scan_rc == 0
+        metrics["scanRc"] = scan_rc
+        print(f"[scan] ok={scan_ok} rc={scan_rc}")
+
+        # DEBUG: 강제 스캔 실패 주입
+        forced_scan_fail = False
+        if os.getenv("ARTIDX_FAIL_SCAN") == "1":
+            forced_scan_fail = True
+            scan_ok = False
+            metrics["scanRc"] = -1  # 가독성: 강제 실패 표시
+
+        if not scan_ok:
+            if forced_scan_fail:
+                errors.append(
+                    "DEBUG: ARTIDX_FAIL_SCAN=1로 인해 스캔을 실패로 강제 설정"
+                )
+            else:
+                errors.append(f"썸네일/리소스 스캔 실패(rc={metrics['scanRc']})")
 
         # 2) 신규 폴더를 master_content에 자동 머지
         try:
             added = self._ensure_new_folders_in_master()
+            if added > 0:
+                metrics["foldersAdded"] = added
+                print(f"[merge] added folders={added}")
         except Exception as e:
-            added = -1
+            # 실패하더라도 전체 Sync는 계속 진행
+            errors.append(f"신규 폴더 자동 병합 실패: {e}")
             print(f"[merge] failed: {e}")
 
-        # 3) 푸시
+        # 3) 푸시: master_content → resource/*.html
         push_ok = True
         block_count = 0
         try:
+
+            # DEBUG: 강제 푸시 실패 주입
+            if os.getenv("ARTIDX_FAIL_PUSH") == "1":
+                raise RuntimeError("DEBUG: ARTIDX_FAIL_PUSH=1 강제 푸시 예외")
+
             block_count = self._push_master_to_resource()
+            metrics["blocksUpdated"] = block_count
         except Exception as e:
             push_ok = False
-            # 실패 원인을 로그로 남겨 두자 (콘솔/pywebview 콘솔에서 확인)
+            errors.append(f"파일 반영(푸시) 실패: {e}")
             print(f"[push] failed: {e}")
 
+        ok = scan_ok and push_ok
+        metrics["durationMs"] = int((time.perf_counter() - t0) * 1000)
+
         print(
-            f"[sync] done ok={(scan_ok and push_ok)} scanOk={scan_ok} pushOk={push_ok} blocks={block_count}"
+            f"[sync] done ok={ok} scanOk={scan_ok} pushOk={push_ok} "
+            f"blocks={block_count} durationMs={metrics['durationMs']}"
         )
-        return {"ok": (scan_ok and push_ok), "scanOk": scan_ok, "pushOk": push_ok}
+        return {
+            "ok": ok,
+            "scanOk": scan_ok,
+            "pushOk": push_ok,
+            "errors": errors,
+            "metrics": metrics,
+        }
 
     # ---- (옵션) 리빌드 → master_content 갱신 ----
     def rebuild_master(self) -> Dict[str, Any]:
@@ -680,8 +728,26 @@ class MasterApi:
     # ---- 썸네일 1건 ----
     def refresh_thumb(self, folder_name: str, width: int = 640) -> Dict[str, Any]:
         folder = self._p_resource_dir() / folder_name
-        ok = make_thumbnail_for_folder(folder, max_width=width)
-        return {"ok": ok}
+        thumbs_dir = folder / "thumbs"
+        try:
+            # 흔한 실패: thumbs가 '파일'인 경우 (폴더가 아니라 생성 불가)
+            if thumbs_dir.exists() and thumbs_dir.is_file():
+                return {
+                    "ok": False,
+                    "error": f"'thumbs' 경로가 파일입니다: {thumbs_dir}. 폴더로 복구해 주세요.",
+                }
+
+            ok = make_thumbnail_for_folder(folder, max_width=width)
+            if ok:
+                return {"ok": True}
+            else:
+                # 라이브러리 내부에서 False만 반환하는 경우를 위한 친절 메시지
+                return {
+                    "ok": False,
+                    "error": "썸네일 생성 실패(소스 이미지 없음, 포맷 미지원, 또는 권한 문제)",
+                }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
 
     def _ensure_new_folders_in_master(self) -> int:
         """

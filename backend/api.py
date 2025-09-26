@@ -8,12 +8,13 @@ import os  # fail test 직후 삭제
 from thumbs import make_thumbnail_for_folder
 from thumbs import _safe_name as _thumb_safe_name
 
-from builder import run_sync_all, rebuild_master_from_sources
+from builder import run_sync_all, render_master_index, render_child_index
 
 try:
-    from bs4 import BeautifulSoup
+    from bs4 import BeautifulSoup, Comment
 except Exception:
     BeautifulSoup = None  # bs4 없으면 일부 기능 제한
+    Comment = None
 
 # -------- 상수 --------
 ROOT_MASTER = "master_index.html"
@@ -71,21 +72,33 @@ def _strip_back_to_master(div_html: str) -> str:
     return str(soup)
 
 
-def _inner_without_h2(div_html: str) -> str:
-    """<div class="folder"> 블록에서 <h2>를 제거하고 내부만 반환한다."""
+def _extract_inner_html_only(div_folder_html: str) -> str:
+    """
+    <div class="folder"> 블록에서 .inner의 '자식 노드들'만 문자열로 반환.
+    헤더/툴바/썸네일은 포함되지 않음.
+    """
     if BeautifulSoup is None:
-        # 정규식 폴백(간이)
-        html = re.sub(r"<h2[^>]*>.*?</h2>", "", div_html, flags=re.I | re.S)
+        # 간단 폴백(정규식)
         m = re.search(
-            r'<div class="folder"[^>]*>(.*)</div>\s*$', html, flags=re.I | re.S
+            r'<div\s+class="inner"[^>]*>([\s\S]*?)</div>',
+            div_folder_html,
+            re.IGNORECASE,
         )
-        return m.group(1).strip() if m else html
-    soup = BeautifulSoup(div_html, "html.parser")
-    root = soup.find("div", class_="folder") or soup
-    h2 = root.find("h2")
-    if h2:
-        h2.decompose()
-    return "".join(str(x) for x in root.contents).strip()
+        inner = m.group(1) if m else ""
+        # 주석 제거
+        inner = re.sub(r"<!--[\s\S]*?-->", "", inner)
+        return inner.strip()
+
+    soup = BeautifulSoup(div_folder_html, "html.parser")
+    folder = soup.find("div", class_="folder") or soup
+    inner = folder.find("div", class_="inner")
+    if not inner:
+        return ""
+    # 🔑 코멘트 노드 제거(placeholder가 텍스트로 노출되는 것 방지)
+    for node in list(inner.contents):
+        if Comment is not None and isinstance(node, Comment):
+            node.extract()
+    return "".join(str(x) for x in inner.contents).strip()
 
 
 def _clean_for_publish(div_html: str) -> str:
@@ -257,41 +270,6 @@ def _adjust_paths_for_folder(
                 tag["href"] = f"{folder}/{rest}" if for_resource_master else rest
 
     return str(soup)
-
-
-def _wrap_folder_index(title: str, inner: str) -> str:
-    return f"""<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>{title}</title>
-  <link rel="stylesheet" href="../master.css" />
-</head>
-<body>
-  <div class="folder">
-    <h2>{title}</h2>
-    {inner}
-    <a href="../{ROOT_MASTER}">⬅ 전체 목록으로</a>
-  </div>
-</body>
-</html>"""
-
-
-def _build_master_from_blocks(blocks_html: list[str]) -> str:
-    head = """<!DOCTYPE html>
-<html lang="ko">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>미술 수업 자료 Index</title>
-  <link rel="stylesheet" href="master.css" />
-</head>
-<body>
-  <h1>미술 수업 자료 Index</h1>
-"""
-    tail = "\n</body>\n</html>"
-    return head + "\n".join(blocks_html) + tail
 
 
 def _make_clean_block_html_for_master(folder: str, resource_dir: Path) -> str:
@@ -580,15 +558,16 @@ class MasterApi:
             return 0
 
         if BeautifulSoup is None:
-            inner = _extract_body_inner(html)
-            self._write(self._p_resource_master(), _build_master_from_blocks([inner]))
-            print("[push] bs4 missing, only wrote master_index.html (blocks=1)")
-            return 1
+            # 최소 동작(퇴행 방지): 그대로 중단 처리
+            print("[push] bs4 missing; cannot safely render without sanitizer/dedupe")
+            return 0
 
         soup = BeautifulSoup(html, "html.parser")
-        blocks_for_master: list[str] = []
         block_count = 0
         resource_dir = self._p_resource_dir()
+
+        # 마스터 렌더에 전달할 데이터 수집
+        folders_for_master: list[dict] = []
 
         for div in soup.find_all("div", class_="folder"):
             h2 = div.find("h2")
@@ -599,27 +578,52 @@ class MasterApi:
 
             cleaned_div_html = _clean_for_publish(str(div))
 
-            # ✅ 썸네일 자동 보강: thumb-wrap이 비면 파일시스템 기반으로 채워 넣기
+            # 썸네일 자동 보강: thumb-wrap이 비면 파일시스템 기반으로 채워 넣기
             cleaned_div_html = _ensure_thumb_in_head(
                 cleaned_div_html, folder, resource_dir
             )
 
-            # 1) 마스터용 블록
-            div_for_master = _strip_back_to_master(cleaned_div_html)
-            div_for_master = _adjust_paths_for_folder(
-                div_for_master, folder, for_resource_master=True
-            )
-            blocks_for_master.append(div_for_master)
+            # 공통: h2/썸네일을 제외한 본문(inner)만 추출
+            inner_only = _extract_inner_html_only(cleaned_div_html)
 
-            # 2) 폴더 index.html용
-            inner_only = _inner_without_h2(cleaned_div_html)
+            # 1) 마스터용: resource/master_index 기준 경로로 보정 + back 링크 제거
+            inner_for_master = _adjust_paths_for_folder(
+                inner_only, folder, for_resource_master=True
+            )
+            inner_for_master = _strip_back_to_master(inner_for_master)
+
+            # 2) 하위 index.html용: 해당 폴더 기준 상대 경로로 보정
             inner_for_folder = _adjust_paths_for_folder(
                 inner_only, folder, for_resource_master=False
             )
-            folder_html = _wrap_folder_index(folder, inner_for_folder)
-            self._write(self._p_resource_dir() / folder / FOLDER_INDEX, folder_html)
 
-        master_html = _build_master_from_blocks(blocks_for_master)
+            # 썸네일 경로 계산
+            safe = _thumb_safe_name(folder)
+            thumb_rel_for_master = None
+            if (resource_dir / folder / "thumbs" / f"{safe}.jpg").exists():
+                # master_index에서는 "<folder>/thumbs/.."
+                thumb_rel_for_master = f"{folder}/thumbs/{safe}.jpg"
+
+            # 마스터 렌더 입력 누적
+            folders_for_master.append(
+                {
+                    "title": folder,
+                    "html": inner_for_master,
+                    "thumb": thumb_rel_for_master,
+                }
+            )
+
+            # 하위 index.html 생성 (툴바 없음)
+            child_html = render_child_index(
+                title=folder,
+                html_body=inner_for_folder,
+                # child 기준 경로: "thumbs/.."
+                thumb_src=(f"thumbs/{safe}.jpg" if thumb_rel_for_master else None),
+            )
+            self._write(self._p_resource_dir() / folder / FOLDER_INDEX, child_html)
+
+        # 마스터(캐시) 생성 (툴바 1회/중복 제거는 builder에서 보장)
+        master_html = render_master_index(folders_for_master)
         self._write(self._p_resource_master(), master_html)
 
         print(f"[push] blocks={block_count} ok=True")
@@ -714,16 +718,27 @@ class MasterApi:
     # ---- (옵션) 리빌드 → master_content 갱신 ----
     def rebuild_master(self) -> Dict[str, Any]:
         """
-        스크립트로부터 순수 빌드 결과를 받아 master_content.html을 새로 설정.
-        (사용자 편집 초기화 목적일 때만 사용 권장)
-        HAZARD(yesterday): builder.rebuild_master_from_sources()는 .folder-actions 버튼이 포함된 블록을 반환한다.
-        → _prefix_resource_paths_for_root()를 거쳐도 버튼 자체는 남는다.
+        master_content.html을 초기 상태로 재구성(사용자 편집 초기화 용도).
+        - resource/<폴더>를 스캔해 '깨끗한 기본 카드'만 채워넣음(툴바/버튼 없음).
         """
-        html = rebuild_master_from_sources(resource_dir=self._p_resource_dir())
-        inner = _extract_body_inner(html)
-        inner = _prefix_resource_paths_for_root(inner)
-        self._write(self._p_master_file(), inner)
-        return {"ok": True}
+        if BeautifulSoup is None:
+            return {
+                "ok": False,
+                "error": "bs4가 없어 초기화 빌드를 수행할 수 없습니다.",
+            }
+
+        resource_dir = self._p_resource_dir()
+        blocks: list[str] = []
+        for p in sorted(resource_dir.iterdir(), key=lambda x: x.name):
+            if not p.is_dir():
+                continue
+            if p.name.startswith(".") or p.name.lower() == "thumbs":
+                continue
+            blocks.append(_make_clean_block_html_for_master(p.name, resource_dir))
+
+        new_html = "\n\n".join(blocks) + ("\n" if blocks else "")
+        self._write(self._p_master_file(), new_html)
+        return {"ok": True, "added": len(blocks)}
 
     # ---- 썸네일 1건 ----
     def refresh_thumb(self, folder_name: str, width: int = 640) -> Dict[str, Any]:

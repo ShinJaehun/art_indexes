@@ -32,6 +32,9 @@ except Exception:
 ROOT_MASTER = "master_index.html"
 FOLDER_INDEX = "index.html"
 
+# AC2: sanitizer 로그 토글
+SAN_VERBOSE = os.getenv("ARTIDX_SAN_VERBOSE") == "1"
+
 
 # -------- 메인 API --------
 class MasterApi:
@@ -126,7 +129,32 @@ class MasterApi:
             folder = h2.get_text(strip=True)
             block_count += 1
 
-            cleaned_div_html = sanitize_for_publish(str(div))
+            # AC2: snatizer 메트릭 활성화
+            cleaned_div_html, san_m = sanitize_for_publish(
+                str(div), return_metrics=True
+            )
+            # 누적치를 sync 메트릭으로 올리기 위해 임시 저장
+            # self._san_metrics는 sync() 호출마다 초기화
+            if not hasattr(self, "_san_metrics"):
+                self._san_metrics = {
+                    "removed_nodes": 0,
+                    "removed_attrs": 0,
+                    "unwrapped_tags": 0,
+                    "blocked_urls": 0,
+                }
+            for k, v in san_m.items():
+                self._san_metrics[k] += v
+
+            # (옵션) 폴더별 상세 로그
+            if SAN_VERBOSE and any(san_m.values()):
+                print(
+                    f"[san] folder='{folder}' "
+                    f"removed_nodes={san_m['removed_nodes']} "
+                    f"removed_attrs={san_m['removed_attrs']} "
+                    f"unwrapped_tags={san_m['unwrapped_tags']} "
+                    f"blocked_urls={san_m['blocked_urls']}"
+                )
+
             cleaned_div_html = ensure_thumb_in_head(
                 cleaned_div_html, folder, resource_dir
             )
@@ -189,6 +217,18 @@ class MasterApi:
             "blocksUpdated": 0,
             "scanRc": None,
             "durationMs": None,
+            "sanRemovedNodes": 0,  # AC2: sanitizer 메트릭
+            "sanRemovedAttrs": 0,  # AC2: sanitizer 메트릭
+            "sanUnwrappedTags": 0,  # AC2: sanitizer 메트릭
+            "sanBlockedUrls": 0,  # AC2: sanitizer 메트릭
+        }
+
+        # AC2: sanitizer 누적치 초기화
+        self._san_metrics = {
+            "removed_nodes": 0,
+            "removed_attrs": 0,
+            "unwrapped_tags": 0,
+            "blocked_urls": 0,
         }
 
         # 1) 썸네일/리소스 스캔
@@ -237,9 +277,29 @@ class MasterApi:
         ok = scan_ok and push_ok
         metrics["durationMs"] = int((time.perf_counter() - t0) * 1000)
 
+        # AC2: sanitizer 누적치 반영
+        san = getattr(self, "_san_metrics", None) or {}
+        metrics["sanRemovedNodes"] = san.get("removed_nodes", 0)
+        metrics["sanRemovedAttrs"] = san.get("removed_attrs", 0)
+        metrics["sanUnwrappedTags"] = san.get("unwrapped_tags", 0)
+        metrics["sanBlockedUrls"] = san.get("blocked_urls", 0)
+
+        # AC2: 누적치 반영
+        san = getattr(self, "_san_metrics", None) or {}
+        metrics["sanRemovedNodes"] = san.get("removed_nodes", 0)
+        metrics["sanRemovedAttrs"] = san.get("removed_attrs", 0)
+        metrics["sanUnwrappedTags"] = san.get("unwrapped_tags", 0)
+        metrics["sanBlockedUrls"] = san.get("blocked_urls", 0)
+
         print(
-            f"[sync] done ok={ok} scanOk={scan_ok} pushOk={push_ok} blocks={block_count} durationMs={metrics['durationMs']}"
+            f"[sync] done ok={ok} scanOk={scan_ok} pushOk={push_ok} "
+            f"blocks={block_count} durationMs={metrics['durationMs']} "
+            f"sanRemovedNodes={metrics['sanRemovedNodes']} "
+            f"sanRemovedAttrs={metrics['sanRemovedAttrs']} "
+            f"sanUnwrappedTags={metrics['sanUnwrappedTags']} "
+            f"sanBlockedUrls={metrics['sanBlockedUrls']}"
         )
+
         return {
             "ok": ok,
             "scanOk": scan_ok,

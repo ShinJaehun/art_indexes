@@ -1,22 +1,91 @@
 import re
+from typing import Tuple, Dict, Union
 
 try:
     from bs4 import BeautifulSoup
 except Exception:
     BeautifulSoup = None
 
+DangerTags = {
+    "script",
+    "style",
+    "iframe",
+    "object",
+    "embed",
+    "link",
+    "form",
+    "input",
+    "button",
+    "video",
+    "audio",
+}
 
-def sanitize_for_publish(div_html: str) -> str:
+AllowedTags = {
+    "div",
+    "p",
+    "img",
+    "a",
+    "ul",
+    "ol",
+    "li",
+    "br",
+    "h2",
+    "h3",
+    "h4",
+    "span",
+    "strong",
+    "em",
+}
+
+AllowedAttrs = {
+    "img": {"src", "alt", "title", "width", "height"},
+    "a": {"href", "title", "target", "rel"},
+}
+# 허용 URL 스킴(상대경로는 따로 허용)
+ALLOWED_SCHEMES = ("http://", "https://", "mailto:", "tel:", "/", "./", "../")
+
+
+def _is_allowed_url(u: str) -> bool:
+    if not u:
+        return True
+    low = u.strip().lower()
+    if low.startswith("javascript:"):
+        return False
+    if low.startswith("data:"):
+        # 내부 프로젝트 특성상 data:URI는 배포물에서 금지(파일만 허용)
+        return False
+    if low.startswith(ALLOWED_SCHEMES) or not re.match(r"^[a-z]+:", low):
+        return True
+    return False
+
+
+def sanitize_for_publish(
+    div_html: str, *, return_metrics: bool = False
+) -> Union[str, Tuple[str, Dict[str, int]]]:
     """
-    편집용 div.folder → 배포용으로 정화
-    - 제거: .folder-actions, .btn*, contenteditable/draggable, on*, data-*, style
-    - 화이트리스트: 태그/속성 최소화
+    편집용 div.folder → 배포용 정화
+    - 제거: .folder-actions, .btn*, DangerTags
+    - 속성: on*, data-*, style, contenteditable, draggable 제거
+    - 태그: 화이트리스트 외는 unwrap
+    - URL: javascript:, data: 차단(속성 제거)
+    - 메트릭 반환 옵션
     """
+    metrics = {
+        "removed_nodes": 0,
+        "removed_attrs": 0,
+        "unwrapped_tags": 0,
+        "blocked_urls": 0,
+    }
+
     if BeautifulSoup is None:
+        # 폴백(정규식 기반 최소 정화 + 대략적인 카운팅)
+        html = div_html
+        # 컨트롤 UI 제거
+        before = len(html)
         html = re.sub(
             r'<[^>]+class="[^"]*\bfolder-actions\b[^"]*"[^>]*>.*?</[^>]+>',
             "",
-            div_html,
+            html,
             flags=re.I | re.S,
         )
         html = re.sub(
@@ -25,41 +94,59 @@ def sanitize_for_publish(div_html: str) -> str:
             html,
             flags=re.I | re.S,
         )
-        html = re.sub(r'\scontenteditable="[^"]*"', "", html, flags=re.I)
-        html = re.sub(r'\sdraggable="[^"]*"', "", html, flags=re.I)
-        html = re.sub(r'\sdata-[\w-]+="[^"]*"', "", html, flags=re.I)
-        html = re.sub(r'\son[a-zA-Z]+\s*=\s*"[^"]*"', "", html, flags=re.I)
-        html = re.sub(r'\sstyle="[^"]*"', "", html, flags=re.I)
-        return html
+        metrics["removed_nodes"] += 1 if len(html) != before else 0
 
+        # 위험 태그 제거
+        for t in DangerTags:
+            patt = rf"<{t}\b[^>]*>.*?</{t}>"
+            new = re.sub(patt, "", html, flags=re.I | re.S)
+            if new != html:
+                metrics["removed_nodes"] += 1
+                html = new
+
+        # 속성 제거
+        def _rm_attr(pattern: str, s: str) -> str:
+            new = re.sub(pattern, "", s, flags=re.I)
+            if new != s:
+                metrics["removed_attrs"] += 1
+            return new
+
+        html = _rm_attr(r'\scontenteditable="[^"]*"', html)
+        html = _rm_attr(r'\sdraggable="[^"]*"', html)
+        html = _rm_attr(r'\sdata-[\w-]+="[^"]*"', html)
+        html = _rm_attr(r'\son[a-zA-Z]+\s*=\s*"[^"]*"', html)
+        html = _rm_attr(r'\sstyle="[^"]*"', html)
+
+        # URL 차단 (대략)
+        def _strip_bad_url(m: "re.Match[str]") -> str:
+            url = m.group(2)
+            if not _is_allowed_url(url):
+                metrics["blocked_urls"] += 1
+                return m.group(1) + '"'  # 속성만 제거
+            return m.group(0)
+
+        html = re.sub(r'(\shref=)"([^"]*)"', _strip_bad_url, html, flags=re.I)
+        html = re.sub(r'(\ssrc=)"([^"]*)"', _strip_bad_url, html, flags=re.I)
+
+        return (html, metrics) if return_metrics else html
+
+    # --- BeautifulSoup 경로 ---
     soup = BeautifulSoup(div_html, "html.parser")
 
+    # 1) 컨트롤 UI 제거
     for n in soup.select('.folder-actions, .btn, [class^="btn"]'):
         n.decompose()
+        metrics["removed_nodes"] += 1
 
-    allowed_tags = {
-        "div",
-        "p",
-        "img",
-        "a",
-        "ul",
-        "ol",
-        "li",
-        "br",
-        "h2",
-        "h3",
-        "h4",
-        "span",
-        "strong",
-        "em",
-    }
-    allowed_attrs = {
-        "img": {"src", "alt", "title", "width", "height"},
-        "a": {"href", "title", "target", "rel"},
-    }
+    # 2) 위험 태그 제거
+    for t in list(DangerTags):
+        for node in soup.find_all(t):
+            node.decompose()
+            metrics["removed_nodes"] += 1
 
+    # 3) 태그/속성 정리
     for tag in list(soup.find_all(True)):
-        # 공통 속성 제거
+        # 속성 정리
         for attr in list(tag.attrs.keys()):
             low = attr.lower()
             if (
@@ -68,17 +155,34 @@ def sanitize_for_publish(div_html: str) -> str:
                 or low in {"contenteditable", "draggable", "style"}
             ):
                 tag.attrs.pop(attr, None)
+                metrics["removed_attrs"] += 1
+
+        # 링크/이미지 URL 안전화
+        if tag.name == "a" and tag.has_attr("href"):
+            href = str(tag["href"])
+            if not _is_allowed_url(href):
+                tag.attrs.pop("href", None)
+                metrics["blocked_urls"] += 1
+        if tag.name == "img" and tag.has_attr("src"):
+            src = str(tag["src"])
+            if not _is_allowed_url(src):
+                tag.attrs.pop("src", None)
+                metrics["blocked_urls"] += 1
 
         # 태그 화이트리스트
-        if tag.name not in allowed_tags:
+        if tag.name not in AllowedTags:
+            # div.folder 컨테이너까지 unwrap되면 안 되므로, 호출측에서 div.folder 단위로 주입하는 전제
             tag.unwrap()
+            metrics["unwrapped_tags"] += 1
             continue
 
-        # 허용 속성만 유지
-        if tag.name in allowed_attrs:
-            keep = allowed_attrs[tag.name]
+        # 허용 속성만 유지(+class 허용)
+        if tag.name in AllowedAttrs:
+            keep = AllowedAttrs[tag.name]
             for a in list(tag.attrs.keys()):
                 if a not in keep and a != "class":
                     tag.attrs.pop(a, None)
+                    metrics["removed_attrs"] += 1
 
-    return str(soup)
+    out = str(soup)
+    return (out, metrics) if return_metrics else out

@@ -1,5 +1,7 @@
 import re
+import html as _py_html
 from typing import Tuple, Dict, Union
+from bs4 import BeautifulSoup, NavigableString
 
 try:
     from bs4 import BeautifulSoup
@@ -35,6 +37,8 @@ AllowedTags = {
     "span",
     "strong",
     "em",
+    "figure",
+    "figcaption",
 }
 
 AllowedAttrs = {
@@ -43,6 +47,29 @@ AllowedAttrs = {
 }
 # 허용 URL 스킴(상대경로는 따로 허용)
 ALLOWED_SCHEMES = ("http://", "https://", "mailto:", "tel:", "/", "./", "../")
+
+
+def _safe_unescape_tag_texts_in_inner(soup: BeautifulSoup):
+    """.inner 내부의 텍스트 노드 중 &lt;...&gt; 패턴을 허용 태그만 실제 HTML로 복원"""
+    inners = soup.select(".inner")
+    for inner in inners:
+        # 텍스트 노드만 순회
+        for node in list(inner.descendants):
+            if isinstance(node, NavigableString):
+                s = str(node)
+                if ("&lt;" in s and "&gt;" in s) or ("<" in s and ">" in s):
+                    un = _py_html.unescape(s)
+                    # 파싱해서 허용태그만 보존
+                    frag = BeautifulSoup(un, "html.parser")
+                    # 위험/이벤트 속성 제거는 기존 sanitize에서 다시 수행됨
+                    # 여기선 단순히 노드를 교체
+                    parent = node.parent
+                    if parent is None:
+                        continue
+                    # replace NavigableString with parsed fragment children
+                    for child in list(frag.contents):
+                        parent.insert(parent.contents.index(node), child)
+                    node.extract()
 
 
 def _is_allowed_url(u: str) -> bool:
@@ -57,6 +84,48 @@ def _is_allowed_url(u: str) -> bool:
     if low.startswith(ALLOWED_SCHEMES) or not re.match(r"^[a-z]+:", low):
         return True
     return False
+
+
+def _normalize_lists(soup: BeautifulSoup):
+    """
+    - 부모가 UL/OL이 아닌 LI들을 가장 가까운 '이전 형제의 UL/OL'로 이동.
+    - 없다면 새 UL을 만들어 감싼다.
+    - 빈 UL/OL 제거.
+    """
+    # 1) 고아 LI 모으기
+    orphans = []
+    for li in soup.find_all("li"):
+        if li.parent and li.parent.name in ("ul", "ol"):
+            continue
+        orphans.append(li)
+
+    for li in orphans:
+        # 이전 형제들 중 가장 가까운 UL/OL 찾기 (DIV 래핑을 건너뛰어 탐색)
+        prev = li.previous_sibling
+        target = None
+        while prev:
+            if getattr(prev, "name", None) in ("ul", "ol"):
+                target = prev
+                break
+            # div 같은 래퍼 안쪽에 ul/ol이 있는 경우
+            if getattr(prev, "name", None) and prev.find(["ul", "ol"]):
+                inner_list = prev.find(["ul", "ol"])
+                if inner_list:
+                    target = inner_list
+                    break
+            prev = prev.previous_sibling
+
+        if not target:
+            # 앞에 없으면 li 앞에 새 UL 생성해서 감싼다
+            target = soup.new_tag("ul")
+            li.insert_before(target)
+
+        target.append(li)
+
+    # 2) 빈 UL/OL 정리
+    for t in soup.find_all(["ul", "ol"]):
+        if not t.find("li"):
+            t.decompose()
 
 
 def sanitize_for_publish(
@@ -133,6 +202,9 @@ def sanitize_for_publish(
     # --- BeautifulSoup 경로 ---
     soup = BeautifulSoup(div_html, "html.parser")
 
+    # 이스케이프된 태그 텍스트를 허용태그로 복원 (inner 영역만)
+    _safe_unescape_tag_texts_in_inner(soup)
+
     # 1) 컨트롤 UI 제거
     for n in soup.select('.folder-actions, .btn, [class^="btn"]'):
         n.decompose()
@@ -183,6 +255,8 @@ def sanitize_for_publish(
                 if a not in keep and a != "class":
                     tag.attrs.pop(a, None)
                     metrics["removed_attrs"] += 1
+
+    _normalize_lists(soup)
 
     out = str(soup)
     return (out, metrics) if return_metrics else out

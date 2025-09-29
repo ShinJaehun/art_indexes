@@ -101,6 +101,9 @@ class MasterApi:
 
     def save_master(self, html: str) -> Dict[str, Any]:
         """편집 저장: master_content.html만 갱신(사용자 작성 HTML 그대로 저장)"""
+        if "<h2>" not in html and "&lt;h2&gt;" in html:
+            print("[save_master] WARN: incoming HTML is already escaped")
+
         fixed = persist_thumbs_in_master(html, self._p_resource_dir())
         self._write(self._p_master_file(), fixed)
         return {"ok": True}

@@ -1,10 +1,29 @@
 // master.js
-const $  = (s, el = document) => el.querySelector(s);
+const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => Array.from(el.querySelectorAll(s));
 
 let hasBridge = false;
 let _toolbarWired = false;
 let _statusTimer = null;
+
+// --- paste modifier 키 상태 추적 (Shift/Alt 감지)---
+const __pasteMods = { shift: false, alt: false };
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Shift") __pasteMods.shift = true;
+  if (e.key === "Alt") __pasteMods.alt = true;
+});
+window.addEventListener("keyup", (e) => {
+  if (e.key === "Shift") __pasteMods.shift = false;
+  if (e.key === "Alt") __pasteMods.alt = false;
+});
+window.addEventListener("blur", () => { __pasteMods.shift = __pasteMods.alt = false; });
+
+// --- escape 유틸 ---
+function escapeHTML(s) {
+  const div = document.createElement("div");
+  div.textContent = s == null ? "" : String(s);
+  return div.innerHTML;
+}
 
 // ---- Status UI helpers -------------------------------------------------
 function ensureStatusUI() {
@@ -187,18 +206,19 @@ async function loadMaster() {
   }
   enhanceBlocks();
   wireGlobalToolbar();
-  clearStatus(); 
+  clearStatus();
 }
 
 function enhanceBlocks() {
   $$(".folder").forEach(div => {
     if (div.__enhanced) return;
 
-    // 헬퍼: head 내부를 h2 → actions → thumb-wrap 순서로 정렬
+    // head: h2 → actions → thumb-wrap 순서 보정
     function normalizeHead(headEl) {
       const h2 = $("h2", headEl);
       let actions = $(".folder-actions", headEl);
       let thumbWrap = $(".thumb-wrap", headEl);
+
       if (!actions) {
         actions = document.createElement("div");
         actions.className = "folder-actions" + (hasBridge ? "" : " hidden");
@@ -212,73 +232,61 @@ function enhanceBlocks() {
         thumbWrap = document.createElement("div");
         thumbWrap.className = "thumb-wrap";
       }
-      // 순서 강제: h2 → actions → thumb-wrap
-      // (appendChild는 이미 있는 노드를 이동시킴)
+
       if (h2) headEl.appendChild(h2);
       headEl.appendChild(actions);
       headEl.appendChild(thumbWrap);
       return { actions, thumbWrap };
     }
 
+    // .folder-head 구성 없으면 생성
     const hasHead = !!div.querySelector(".folder-head");
     if (!hasHead) {
       const h2 = $("h2", div);
       if (!h2) return;
-      
+
       const head = document.createElement("div");
       head.className = "folder-head";
       h2.replaceWith(head);
-      
       head.appendChild(h2);
-      normalizeHead(head);
+      const { thumbWrap } = normalizeHead(head);
 
-      // 1) 썸네일 영역은 편집영역 밖(HEAD)에 고정
-      let thumbWrap = $(".thumb-wrap", head);
-
-      // 2) head 다음 형제들 중 썸네일 후보는 먼저 thumb-wrap으로 이동
-      {
-        let node = head.nextSibling;
-        while (node) {
-          const next = node.nextSibling;
-          if (
-            node.nodeType === 1 && node.matches &&
-            (
-              node.matches("img.thumb, img[alt='썸네일']") ||
-              (node.tagName === "IMG" && /\/thumbs\//.test(node.getAttribute("src") || ""))
-            )
-          ) {
-            thumbWrap.appendChild(node);
-          }
-          node = next;
+      // head 다음 형제 중 썸네일 후보를 thumb-wrap으로 이동
+      let node = head.nextSibling;
+      while (node) {
+        const next = node.nextSibling;
+        if (
+          node.nodeType === 1 && node.matches &&
+          (node.matches("img.thumb, img[alt='썸네일']") ||
+            (node.tagName === "IMG" && /\/thumbs\//.test(node.getAttribute("src") || "")))
+        ) {
+          thumbWrap.appendChild(node);
         }
+        node = next;
       }
 
-      // 3) 본문 컨테이너 생성 및 나머지(썸네일 외)만 .inner로 이동
-      let inner = $(".inner", div);
-      if (!inner) {
-        inner = document.createElement("div");
-        inner.className = "inner";
-
+      // .inner 생성 및 나머지 내용을 .inner로 이동
+      let innerEl = $(".inner", div);
+      if (!innerEl) {
+        innerEl = document.createElement("div");
+        innerEl.className = "inner";
         const rest = [];
         let n = head.nextSibling;
         while (n) { rest.push(n); n = n.nextSibling; }
-        rest.forEach(nd => inner.appendChild(nd));
-
-        div.appendChild(inner);
+        rest.forEach(nd => innerEl.appendChild(nd));
+        div.appendChild(innerEl);
       }
 
-      // 4) 혹시 이미 .inner 안으로 들어간 썸네일이 있다면 꺼내오기(보정)
+      // .inner 안으로 들어간 썸네일이 있다면 다시 head로
       const stray = $(".inner img.thumb, .inner img[alt='썸네일'], .inner img[src*='/thumbs/']", div);
-      if (stray) {
-        thumbWrap.appendChild(stray);
-      }
+      if (stray) $(".thumb-wrap", head).appendChild(stray);
+
     } else {
-      // 이미 head가 있는 카드: actions가 없으면 보강(중복 생성 방지)
       const head = $(".folder-head", div);
       normalizeHead(head);
     }
 
-    // 5) 제목/썸네일은 항상 편집 제외
+    // 제목/썸네일은 편집 제외
     const title = $(".folder-head h2", div);
     const thumbWrap = $(".thumb-wrap", div);
     title?.setAttribute("contenteditable", "false");
@@ -290,22 +298,158 @@ function enhanceBlocks() {
       el.setAttribute("draggable", "false");
     });
 
-    // 6) 버튼 핸들러: 편집은 시작만, 저장은 종료까지
+    // 버튼/inner 참조
     const actions = $(".folder-head .folder-actions", div);
     const inner = $(".inner", div);
     const folder = div.getAttribute("data-folder") || (title?.textContent || "").trim();
-
     const btnEditOne = $(".btnEditOne", actions);
     const btnSaveOne = $(".btnSaveOne", actions);
-    const btnThumb   = $(".btnThumb", actions);
+    const btnThumb = $(".btnThumb", actions);
 
-    // ✅ 기본 상태: 편집 꺼짐, [편집] 활성 / [저장] 비활성
+    // --- 붙여넣기 핸들러 (중복 제거, escape 유틸 사용) ---
+    if (inner && !inner.__pasteWired) {
+      inner.addEventListener("paste", (e) => {
+        try {
+          if (!e.clipboardData) return;
+
+          // Shift/Alt 누르면 "문자 그대로 붙여넣기" 모드
+          const forceLiteral = __pasteMods.shift || __pasteMods.alt;
+
+          // 1) HTML 클립보드가 있고 literal이 아니면 → 그대로 삽입
+          const html = e.clipboardData.getData("text/html");
+          if (html && !forceLiteral) {
+            e.preventDefault();
+            document.execCommand("insertHTML", false, html);
+            return;
+          }
+
+          // 2) 평문 처리
+          const raw = e.clipboardData.getData("text/plain");
+          if (!raw) return;
+
+          const hasLiteralTags = /<[^>]+>/.test(raw);      // <h2>...</h2>
+          const hasEscapedTags = /&lt;[^&]+&gt;/.test(raw);// &lt;h2&gt;...&lt;/h2&gt;
+          const hasCodeFence = /(^|\n)```/.test(raw);    // 코드펜스
+
+          // 2-A) 문자 그대로 붙여넣기(코드펜스 or 강제 literal)
+          if (forceLiteral || hasCodeFence) {
+            e.preventDefault();
+            const stripped = raw.replace(/(^|\n)```([\s\S]*?)```/g, (_, pre, body) => pre + body);
+            const literal = escapeHTML(stripped);
+            document.execCommand("insertHTML", false, `<pre><code>${literal}</code></pre>`);
+            return;
+          }
+
+          // 2-B) 태그형 텍스트를 실제 HTML로 삽입 (보안 필터 포함)
+          if (hasLiteralTags || hasEscapedTags) {
+            e.preventDefault();
+
+            // &lt;…&gt; → 언이스케이프
+            let decoded = raw;
+            if (hasEscapedTags) {
+              const ta = document.createElement("textarea");
+              ta.innerHTML = raw;
+              decoded = ta.value;
+            }
+
+            // 브라우저 파서로 DOM 구성
+            const divTmp = document.createElement("div");
+            divTmp.innerHTML = decoded;
+
+            // 간이 sanitizer: 허용/금지 + 속성 필터
+            const allowed = new Set(["P", "BR", "IMG", "A", "UL", "OL", "LI", "H1", "H2", "H3", "H4", "STRONG", "EM", "SPAN", "DIV", "FIGURE", "FIGCAPTION"]);
+            const danger = new Set(["SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "LINK", "FORM", "INPUT", "BUTTON", "VIDEO", "AUDIO"]);
+
+            divTmp.querySelectorAll(Array.from(danger).join(",")).forEach(n => n.remove());
+            divTmp.querySelectorAll("*").forEach(el => {
+              [...el.attributes].forEach(attr => {
+                const k = attr.name.toLowerCase();
+                const v = (attr.value || "").trim().toLowerCase();
+                if (k.startsWith("on") || k === "style" || k === "contenteditable" || k === "draggable" || k.startsWith("data-")) {
+                  el.removeAttribute(attr.name);
+                }
+                if ((k === "href" || k === "src") && (v.startsWith("javascript:") || v.startsWith("data:"))) {
+                  el.removeAttribute(attr.name);
+                }
+              });
+              if (!allowed.has(el.tagName)) {
+                const p = el.parentNode;
+                while (el.firstChild) p.insertBefore(el.firstChild, el);
+                p.removeChild(el);
+              }
+            });
+
+            // === 2-4) 구조 보정: 헤딩 강등 + 고아 li 래핑 + 빈 태그 정리 ===
+
+            // 본문에서는 h1/h2를 h3로 강등 (제목 <h2>는 folder-head 쪽이 담당하므로)
+            (function demoteHeadings(root) {
+              root.querySelectorAll("h1,h2").forEach(h => {
+                const h3 = document.createElement("h3");
+                h3.innerHTML = h.innerHTML;
+                // 기존 id/class는 유지(원하면 제거 가능)
+                [...h.attributes].forEach(a => h3.setAttribute(a.name, a.value));
+                h.replaceWith(h3);
+              });
+            })(divTmp);
+
+            // 고아 <li>들을 인접 구간별로 <ul>로 감싸기
+            (function normalizeOrphanLis(root) {
+              const lis = Array.from(root.querySelectorAll("li")).filter(li => {
+                const p = li.parentElement;
+                return !(p && (p.tagName === "UL" || p.tagName === "OL"));
+              });
+              if (!lis.length) return;
+
+              let run = [];
+              const flush = () => {
+                if (!run.length) return;
+                const ul = document.createElement("ul");
+                run[0].parentNode.insertBefore(ul, run[0]);
+                run.forEach(li => ul.appendChild(li));
+                run = [];
+              };
+
+              // 문서 순서대로 그룹핑
+              const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
+              let node;
+              while ((node = walker.nextNode())) {
+                if (node.tagName === "LI" && lis.includes(node)) {
+                  run.push(node);
+                } else if (run.length) {
+                  flush();
+                }
+              }
+              flush();
+            })(divTmp);
+
+            // 빈/무의미 태그 정리: 비어있는 p/div/span 등 제거 (img, br는 보존)
+            (function pruneEmpty(root) {
+              root.querySelectorAll("p,div,span,figure,figcaption").forEach(el => {
+                const html = (el.innerHTML || "").trim();
+                if (!html || html === "<br>") {
+                  el.remove();
+                }
+              });
+            })(divTmp);
+
+            document.execCommand("insertHTML", false, divTmp.innerHTML);
+            return;
+          }
+          // 2-C) 그 외 평문은 기본 동작
+        } catch (err) {
+          console.warn("paste handler error", err);
+        }
+      });
+      inner.__pasteWired = true;
+    }
+
+    // 기본 상태
     inner.contentEditable = "false";
     inner.classList.remove("editable");
     btnEditOne.disabled = false;
     btnSaveOne.disabled = true;
 
-    // ✅ 편집 시작(토글 없음)
+    // 편집 시작
     btnEditOne.onclick = () => {
       if (!hasBridge) return alert("편집은 데스크톱 앱에서만 가능합니다.");
       inner.contentEditable = "true";
@@ -314,7 +458,7 @@ function enhanceBlocks() {
       btnSaveOne.disabled = false;
     };
 
-    // ✅ 저장 → 자동 종료 & 버튼 원복
+    // 저장
     btnSaveOne.onclick = async () => {
       if (!hasBridge) return;
       btnSaveOne.disabled = true;
@@ -328,20 +472,17 @@ function enhanceBlocks() {
       } catch (e) {
         console.error(e);
         showStatus({ level: "error", title: "저장 실패", lines: [String(e?.message || e)] });
-        // 실패 시 다시 저장 시도 가능하도록 복구
         btnSaveOne.disabled = false;
       }
     };
 
-    // 썸네일 갱신은 기존 동작 유지
+    // 썸네일 갱신
     btnThumb.onclick = async () => {
       if (!hasBridge) return alert("데스크톱 앱에서만 가능합니다.");
       btnThumb.disabled = true;
-
       showStatus({ level: "warn", title: "썸네일 갱신 중…", lines: [`${folder}`] });
-
       try {
-        const r = await call("refresh_thumb", folder, 640); // {ok, error?}
+        const r = await call("refresh_thumb", folder, 640);
         if (r?.ok) {
           showStatus({ level: "ok", title: "썸네일 갱신 완료", lines: [folder], autoHideMs: 1800 });
         } else {
@@ -412,13 +553,13 @@ function wireGlobalToolbar() {
   if (_toolbarWired) return;
   _toolbarWired = true;
 
-  const btnSync     = $("#btnSync");
-  const btnRebuild  = $("#btnRebuild");
+  const btnSync = $("#btnSync");
+  const btnRebuild = $("#btnRebuild");
   const btnRegenAll = $("#btnRegenAll");
 
   // 선택적: 전역 편집/저장 버튼이 있는 경우 동일한 UX 적용
-  const btnEditAll  = $("#btnEdit");     // 존재하면 전역 편집 시작
-  const btnSaveAll  = $("#btnSaveAll");  // 존재하면 전역 저장
+  const btnEditAll = $("#btnEdit");     // 존재하면 전역 편집 시작
+  const btnSaveAll = $("#btnSaveAll");  // 존재하면 전역 저장
 
   // ---- 필수 툴바(있을 때만) ----
   if (btnSync) {

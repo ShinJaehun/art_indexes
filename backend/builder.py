@@ -102,6 +102,10 @@ def render_child_index(title: str, html_body: str, thumb_src: str | None) -> str
         editable=False,
     )
 
+    back_link = (
+        '<a class="back-to-master" href="../master_index.html">⬅ 전체 목록으로</a>'
+    )
+
     html = f"""
 <!DOCTYPE html>
 <html lang="ko">
@@ -113,6 +117,7 @@ def render_child_index(title: str, html_body: str, thumb_src: str | None) -> str
 </head>
 <body>
   {block}
+  {back_link}
 </body>
 </html>
 """.strip()

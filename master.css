@@ -101,3 +101,7 @@ img { max-width: 300px; display: block; margin: 10px 0; }
 .status--error { background: #ffecec; border: 1px solid #e39b9b; }
 .status-details { padding-left: .25rem; }
 .status-details ul { margin: .25rem 0 0 .9rem; }
+
+a.btn { display:inline-block; padding:.5rem .9rem; border:1px solid #ddd; border-radius:.5rem; text-decoration:none; }
+a.btn:hover { background:#f7f7f7; }
+a.btnExternal::after { content:" ↗"; }

@@ -25,6 +25,132 @@ function escapeHTML(s) {
   return div.innerHTML;
 }
 
+// --- 외부 링크 버튼화 & 보안 속성 보강 ---
+function decorateExternalLinks(scopeEl) {
+  const links = scopeEl.querySelectorAll('a[href]');
+  links.forEach(a => {
+
+    let href = (a.getAttribute('href') || '').trim();
+    // 스킴이 없고, www. 또는 도메인 형태라면 https:// 보강
+    if (!/^(?:https?:\/\/|mailto:|tel:|#|\/|\.\.\/)/i.test(href)) {
+      if (/^(?:www\.|(?:[a-z0-9-]+\.)+[a-z]{2,})/i.test(href)) {
+        href = `https://${href}`;
+        a.setAttribute('href', href);
+      }
+    }
+    if (!/^https?:\/\//i.test(href)) return; // 외부 http(s)만 버튼화 대상
+    a.setAttribute('target', '_blank');
+
+    // 기존 rel 유지 + 보안 속성 보장
+    const relSet = new Set(((a.getAttribute('rel') || '')).split(/\s+/).filter(Boolean));
+    relSet.add('noopener'); relSet.add('noreferrer');
+    a.setAttribute('rel', Array.from(relSet).join(' '));
+    // 버튼 스타일(있으면 유지)
+    a.classList.add('btn', 'btnExternal');
+    // 라벨이 비어있으면 도메인으로 기본 라벨
+    if (!a.textContent.trim()) {
+      try {
+        const u = new URL(href);
+        a.textContent = `열기 (${u.hostname})`;
+      } catch { /* noop */ }
+    }
+  });
+}
+
+// --- 텍스트 속 URL을 자동으로 <a>로 감싸기 ---
+function autoLinkify(scopeEl) {
+  // 1) http(s)://...  2) www.example.com/...  3) example.com/...
+  const urlRe = /\b(?:https?:\/\/[^\s<>"']+|www\.[^\s<>"']+|(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[^\s<>"']*)?)/gi;
+
+  const walker = document.createTreeWalker(
+    scopeEl,
+    NodeFilter.SHOW_TEXT,
+    {
+      acceptNode(node) {
+        const s = node.nodeValue;
+        if (!s) return NodeFilter.FILTER_REJECT;
+
+        // ✅ 1) HTML 엔티티/태그 기호가 섞인 텍스트는 건너뜀
+        // (&lt; / &gt; / 실제 < > 가 들어있으면 사용자가 '코드'를 입력 중인 것으로 판단)
+        if (/[<>]/.test(s) || /&lt;|&gt;/i.test(s)) return NodeFilter.FILTER_REJECT;
+
+        // URL 패턴이 없으면 스킵
+        if (!urlRe.test(s)) return NodeFilter.FILTER_REJECT;
+
+        // a/pre/code/script/style 내부는 건너뜀
+        const p = node.parentElement;
+        if (p && p.closest('a, pre, code, script, style')) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      }
+    }
+  );
+
+  const nodes = [];
+  let n;
+  while ((n = walker.nextNode())) nodes.push(n);
+
+  nodes.forEach(textNode => {
+    const text = textNode.nodeValue;
+
+    // ✅ 2) 따옴표 안 구간 범위 미리 수집 → 그 안의 매치는 스킵
+    const quoteRanges = [];
+    const quoteRe = /"[^"]*"|'[^']*'/g;
+    let qm;
+    while ((qm = quoteRe.exec(text)) !== null) {
+      quoteRanges.push([qm.index, qm.index + qm[0].length]); // [start, end)
+    }
+    const inQuoted = (idx) => quoteRanges.some(([s, e]) => idx >= s && idx < e);
+
+    urlRe.lastIndex = 0;
+
+    let match;
+    let lastIdx = 0;
+    const frag = document.createDocumentFragment();
+
+    while ((match = urlRe.exec(text)) !== null) {
+      const start = match.index;
+      const end = start + match[0].length;
+
+      // 따옴표 안이면 링크화하지 않고 건너뜀
+      if (inQuoted(start)) continue;
+
+      if (start > lastIdx) {
+        frag.appendChild(document.createTextNode(text.slice(lastIdx, start)));
+      }
+
+      const raw = match[0];
+
+      // href 정규화: 스킴이 없으면 https:// 보강
+      let href = raw;
+      if (!/^(?:https?:\/\/|mailto:|tel:)/i.test(raw)) {
+        href = /^\/\//.test(raw) ? `https:${raw}` : `https://${raw}`;
+      }
+
+      const a = document.createElement('a');
+      a.href = href;                // 실제 링크는 정규화된 href
+      a.textContent = raw;          // 화면에는 사용자가 쓴 원문 표시
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.classList.add('btn', 'btnExternal');
+      frag.appendChild(a);
+
+      lastIdx = end;
+    }
+
+    // 남은 꼬리 텍스트
+    if (lastIdx < text.length) {
+      frag.appendChild(document.createTextNode(text.slice(lastIdx)));
+    }
+
+    // 매치가 하나도 없고 변경도 없으면 교체 불필요
+    if (frag.childNodes.length === 0) return;
+
+    textNode.replaceWith(frag);
+  });
+}
+
 // ---- Status UI helpers -------------------------------------------------
 function ensureStatusUI() {
   let bar = $("#statusBar");
@@ -301,6 +427,11 @@ function enhanceBlocks() {
     // 버튼/inner 참조
     const actions = $(".folder-head .folder-actions", div);
     const inner = $(".inner", div);
+
+    // ✅ URL 오토링크 + 버튼화(초기 표시 시 1회)
+    autoLinkify(inner);
+    decorateExternalLinks(inner);
+
     const folder = div.getAttribute("data-folder") || (title?.textContent || "").trim();
     const btnEditOne = $(".btnEditOne", actions);
     const btnSaveOne = $(".btnSaveOne", actions);
@@ -463,7 +594,11 @@ function enhanceBlocks() {
       if (!hasBridge) return;
       btnSaveOne.disabled = true;
       try {
+        // ✅ 저장 직전 전체 카드에 대해 오토링크/버튼화 보정
+        $$(".folder .inner").forEach(el => { autoLinkify(el); decorateExternalLinks(el); });
+
         await call("save_master", serializeMaster());
+        await loadMaster(); // 저장된 내용으로 즉시 재로딩(렌더 상태 확인)
         showStatus({ level: "ok", title: "저장 완료", autoHideMs: 1800 });
         inner.contentEditable = "false";
         inner.classList.remove("editable");
@@ -543,7 +678,7 @@ function serializeMaster() {
   });
 
   // 버튼/툴바 제거, 잔여 편집 속성 제거
-  root.querySelectorAll(".folder-actions, .btn").forEach(el => el.remove());
+  root.querySelectorAll(".folder-actions, button.btn").forEach(el => el.remove());
   root.querySelectorAll("[contenteditable]").forEach(el => el.removeAttribute("contenteditable"));
 
   return root.innerHTML;
@@ -642,7 +777,11 @@ function wireGlobalToolbar() {
       if (!hasBridge) return;
       btnSaveAll.disabled = true;
       try {
+        // ✅ 저장 직전 보정
+        $$(".folder .inner").forEach(el => { autoLinkify(el); decorateExternalLinks(el); });
+
         await call("save_master", serializeMaster());
+        await loadMaster(); // 저장된 내용으로 즉시 재로딩(렌더 상태 확인)
         showStatus({ level: "ok", title: "전체 저장 완료", autoHideMs: 2000 });
         // 편집 종료
         $$(".folder .inner").forEach(inner => {

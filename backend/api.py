@@ -111,6 +111,16 @@ class MasterApi:
             _safe_unescape_tag_texts_in_inner(
                 soup
             )  # ← 핵심: 엔티티로 들어온 <a> 등을 실제 노드로 변환
+
+            # ✅ href 정규화: 스킴 없는 외부 도메인에 https:// 붙이기
+            for a in soup.select(".inner a[href]"):
+                href = (a.get("href") or "").strip()
+                if href and not re.match(
+                    r"^(https?://|mailto:|tel:|#|/|\.\./)", href, re.I
+                ):
+                    if re.match(r"^(www\.|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,})", href):
+                        a["href"] = f"https://{href}"
+
             fixed = str(soup)
 
         self._write(self._p_master_file(), fixed)

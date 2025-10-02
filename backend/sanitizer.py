@@ -203,7 +203,13 @@ def sanitize_for_publish(
     # _safe_unescape_tag_texts_in_inner(soup) # <- 저장 시점에서만 복원되므로 publish 단계에서는 복원 시도 안함
 
     # 1) 컨트롤 UI 제거
-    for n in soup.select('.folder-actions, .btn, [class^="btn"]'):
+    # - 폴더 액션 바 전체 제거
+    for n in soup.select(".folder-actions"):
+        n.decompose()
+        metrics["removed_nodes"] += 1
+
+    # - 편집용 버튼만 제거 (a.btn 등 링크는 보존)
+    for n in soup.find_all("button"):
         n.decompose()
         metrics["removed_nodes"] += 1
 
@@ -257,15 +263,20 @@ def sanitize_for_publish(
             # target/_blank면 rel 강제
             tgt = (tag.get("target") or "").strip().lower()
             if tgt == "_blank":
-                # 기존 rel 유지 + noopener noreferrer 보장
-                existing = set(((tag.get("rel") or "")).split())
+                # 기존 rel을 타입 안전하게 집합으로 변환
+                rel_val = tag.get("rel")
+                if isinstance(rel_val, (list, tuple)):
+                    existing = set(
+                        x for x in rel_val if isinstance(x, str) and x.strip()
+                    )
+                elif isinstance(rel_val, str):
+                    existing = set(rel_val.split())
+                else:
+                    existing = set()
+
                 needed = {"noopener", "noreferrer"}
                 if not needed.issubset(existing):
-                    tag["rel"] = (
-                        " ".join(sorted(existing | needed))
-                        if existing
-                        else "noopener noreferrer"
-                    )
+                    tag["rel"] = " ".join(sorted(existing | needed))
 
     out = str(soup)
     return (out, metrics) if return_metrics else out

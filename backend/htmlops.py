@@ -9,7 +9,10 @@ except Exception:
 
 ROOT_MASTER = "master_index.html"
 _BODY_RE = re.compile(r"<body[^>]*>([\s\S]*?)</body>", re.I)
-_SKIP_PREFIX = re.compile(r"^(https?://|/|\.\./|#|resource/|mailto:|tel:|data:)", re.I)
+_SKIP_PREFIX = re.compile(
+    r"^(https?://|www\.|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}|/|\.\./|#|resource/|mailto:|tel:|data:)",
+    re.I,
+)
 
 
 def extract_body_inner(html_text: str) -> str:

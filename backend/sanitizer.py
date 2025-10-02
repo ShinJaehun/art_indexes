@@ -147,9 +147,9 @@ def sanitize_for_publish(
     }
 
     if BeautifulSoup is None:
-        # 폴백(정규식 기반 최소 정화 + 대략적인 카운팅)
+        # (폴백) BeautifulSoup 미존재시: 최소 정화만 수행
         html = div_html
-        # 컨트롤 UI 제거
+
         before = len(html)
         html = re.sub(
             r'<[^>]+class="[^"]*\bfolder-actions\b[^"]*"[^>]*>.*?</[^>]+>',
@@ -165,7 +165,6 @@ def sanitize_for_publish(
         )
         metrics["removed_nodes"] += 1 if len(html) != before else 0
 
-        # 위험 태그 제거
         for t in DangerTags:
             patt = rf"<{t}\b[^>]*>.*?</{t}>"
             new = re.sub(patt, "", html, flags=re.I | re.S)
@@ -173,7 +172,6 @@ def sanitize_for_publish(
                 metrics["removed_nodes"] += 1
                 html = new
 
-        # 속성 제거
         def _rm_attr(pattern: str, s: str) -> str:
             new = re.sub(pattern, "", s, flags=re.I)
             if new != s:
@@ -186,9 +184,8 @@ def sanitize_for_publish(
         html = _rm_attr(r'\son[a-zA-Z]+\s*=\s*"[^"]*"', html)
         html = _rm_attr(r'\sstyle="[^"]*"', html)
 
-        # URL 차단 (대략)
         def _strip_bad_url(m: "re.Match[str]") -> str:
-            url = m.group(2)
+            url = (m.group(2) or "").strip()
             if not _is_allowed_url(url):
                 metrics["blocked_urls"] += 1
                 return m.group(1) + '"'  # 속성만 제거
@@ -202,8 +199,8 @@ def sanitize_for_publish(
     # --- BeautifulSoup 경로 ---
     soup = BeautifulSoup(div_html, "html.parser")
 
-    # 이스케이프된 태그 텍스트를 허용태그로 복원 (inner 영역만)
-    _safe_unescape_tag_texts_in_inner(soup)
+    # .inner 안에서 텍스트에 들어있는 &lt;...&gt; 를 허용 태그로 복원
+    # _safe_unescape_tag_texts_in_inner(soup) # <- 저장 시점에서만 복원되므로 publish 단계에서는 복원 시도 안함
 
     # 1) 컨트롤 UI 제거
     for n in soup.select('.folder-actions, .btn, [class^="btn"]'):
@@ -229,26 +226,25 @@ def sanitize_for_publish(
                 tag.attrs.pop(attr, None)
                 metrics["removed_attrs"] += 1
 
-        # 링크/이미지 URL 안전화
+        # URL 안전화
         if tag.name == "a" and tag.has_attr("href"):
-            href = str(tag["href"])
+            href = str(tag["href"]).strip()
             if not _is_allowed_url(href):
                 tag.attrs.pop("href", None)
                 metrics["blocked_urls"] += 1
         if tag.name == "img" and tag.has_attr("src"):
-            src = str(tag["src"])
+            src = str(tag["src"]).strip()
             if not _is_allowed_url(src):
                 tag.attrs.pop("src", None)
                 metrics["blocked_urls"] += 1
 
         # 태그 화이트리스트
         if tag.name not in AllowedTags:
-            # div.folder 컨테이너까지 unwrap되면 안 되므로, 호출측에서 div.folder 단위로 주입하는 전제
             tag.unwrap()
             metrics["unwrapped_tags"] += 1
             continue
 
-        # 허용 속성만 유지(+class 허용)
+        # 허용 속성만 유지(+ class 허용)
         if tag.name in AllowedAttrs:
             keep = AllowedAttrs[tag.name]
             for a in list(tag.attrs.keys()):
@@ -256,7 +252,20 @@ def sanitize_for_publish(
                     tag.attrs.pop(a, None)
                     metrics["removed_attrs"] += 1
 
-    _normalize_lists(soup)
+        # a 태그 보안 속성 보정
+        if tag.name == "a":
+            # target/_blank면 rel 강제
+            tgt = (tag.get("target") or "").strip().lower()
+            if tgt == "_blank":
+                # 기존 rel 유지 + noopener noreferrer 보장
+                existing = set(((tag.get("rel") or "")).split())
+                needed = {"noopener", "noreferrer"}
+                if not needed.issubset(existing):
+                    tag["rel"] = (
+                        " ".join(sorted(existing | needed))
+                        if existing
+                        else "noopener noreferrer"
+                    )
 
     out = str(soup)
     return (out, metrics) if return_metrics else out

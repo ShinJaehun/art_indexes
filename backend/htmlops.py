@@ -13,6 +13,16 @@ _SKIP_PREFIX = re.compile(r"^(https?://|/|\.\./|#|resource/|mailto:|tel:|data:)"
 
 
 def extract_body_inner(html_text: str) -> str:
+    """
+    전체 HTML에서 <body> 안의 'HTML 그대로'를 반환.
+    BeautifulSoup이 있으면 decode_contents()를, 없으면 정규식 폴백을 사용.
+    """
+    if BeautifulSoup is not None:
+        soup = BeautifulSoup(html_text or "", "html.parser")
+        if soup.body:
+            return soup.body.decode_contents().strip()
+        return html_text or ""
+    # 폴백(정규식)
     m = _BODY_RE.search(html_text or "")
     return m.group(1).strip() if m else (html_text or "")
 
@@ -202,7 +212,8 @@ def adjust_paths_for_folder(
 
 def extract_inner_html_only(div_folder_html: str) -> str:
     """
-    <div class="folder">에서 .inner의 '자식'만 문자열로 반환(헤드/툴바/썸네일 배제)
+    <div class="folder">에서 .inner의 '자식'만 HTML 그대로 반환
+    (헤드/툴바/썸네일 배제, 엔티티 재이스케이프 금지)
     """
     if BeautifulSoup is None:
         m = re.search(
@@ -217,7 +228,9 @@ def extract_inner_html_only(div_folder_html: str) -> str:
     inner = folder.find("div", class_="inner")
     if not inner:
         return ""
-    for node in list(inner.contents):
-        if Comment is not None and isinstance(node, Comment):
-            node.extract()
-    return "".join(str(x) for x in inner.contents).strip()
+    # 주석 제거
+    if Comment is not None:
+        for c in list(inner.find_all(string=lambda x: isinstance(x, Comment))):
+            c.extract()
+    # ✅ 핵심: decode_contents()로 HTML 그대로 추출 (get_text() 금지)
+    return inner.decode_contents().strip()

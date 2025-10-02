@@ -6,9 +6,8 @@ import os  # TODO: fail 테스트 끝나면 제거
 
 from thumbs import make_thumbnail_for_folder
 from builder import run_sync_all, render_master_index, render_child_index
+from sanitizer import sanitize_for_publish, _safe_unescape_tag_texts_in_inner
 
-# 분리된 모듈들
-from sanitizer import sanitize_for_publish
 from htmlops import (
     extract_body_inner,
     prefix_resource_paths_for_root,
@@ -105,6 +104,15 @@ class MasterApi:
             print("[save_master] WARN: incoming HTML is already escaped")
 
         fixed = persist_thumbs_in_master(html, self._p_resource_dir())
+
+        # ✅ 추가: 저장 전에 .inner 내부의 &lt;...&gt;를 '허용 태그'만 실제 태그로 복원
+        if BeautifulSoup is not None:
+            soup = BeautifulSoup(fixed, "html.parser")
+            _safe_unescape_tag_texts_in_inner(
+                soup
+            )  # ← 핵심: 엔티티로 들어온 <a> 등을 실제 노드로 변환
+            fixed = str(soup)
+
         self._write(self._p_master_file(), fixed)
         return {"ok": True}
 

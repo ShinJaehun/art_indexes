@@ -3,11 +3,6 @@ import html as _py_html
 from typing import Tuple, Dict, Union
 from bs4 import BeautifulSoup, NavigableString
 
-try:
-    from bs4 import BeautifulSoup
-except Exception:
-    BeautifulSoup = None
-
 DangerTags = {
     "script",
     "style",
@@ -145,56 +140,6 @@ def sanitize_for_publish(
         "unwrapped_tags": 0,
         "blocked_urls": 0,
     }
-
-    if BeautifulSoup is None:
-        # (폴백) BeautifulSoup 미존재시: 최소 정화만 수행
-        html = div_html
-
-        before = len(html)
-        html = re.sub(
-            r'<[^>]+class="[^"]*\bfolder-actions\b[^"]*"[^>]*>.*?</[^>]+>',
-            "",
-            html,
-            flags=re.I | re.S,
-        )
-        html = re.sub(
-            r'<[^>]+class="[^"]*\bbtn[^"]*"[^>]*>.*?</[^>]+>',
-            "",
-            html,
-            flags=re.I | re.S,
-        )
-        metrics["removed_nodes"] += 1 if len(html) != before else 0
-
-        for t in DangerTags:
-            patt = rf"<{t}\b[^>]*>.*?</{t}>"
-            new = re.sub(patt, "", html, flags=re.I | re.S)
-            if new != html:
-                metrics["removed_nodes"] += 1
-                html = new
-
-        def _rm_attr(pattern: str, s: str) -> str:
-            new = re.sub(pattern, "", s, flags=re.I)
-            if new != s:
-                metrics["removed_attrs"] += 1
-            return new
-
-        html = _rm_attr(r'\scontenteditable="[^"]*"', html)
-        html = _rm_attr(r'\sdraggable="[^"]*"', html)
-        html = _rm_attr(r'\sdata-[\w-]+="[^"]*"', html)
-        html = _rm_attr(r'\son[a-zA-Z]+\s*=\s*"[^"]*"', html)
-        html = _rm_attr(r'\sstyle="[^"]*"', html)
-
-        def _strip_bad_url(m: "re.Match[str]") -> str:
-            url = (m.group(2) or "").strip()
-            if not _is_allowed_url(url):
-                metrics["blocked_urls"] += 1
-                return m.group(1) + '"'  # 속성만 제거
-            return m.group(0)
-
-        html = re.sub(r'(\shref=)"([^"]*)"', _strip_bad_url, html, flags=re.I)
-        html = re.sub(r'(\ssrc=)"([^"]*)"', _strip_bad_url, html, flags=re.I)
-
-        return (html, metrics) if return_metrics else html
 
     # --- BeautifulSoup 경로 ---
     soup = BeautifulSoup(div_html, "html.parser")

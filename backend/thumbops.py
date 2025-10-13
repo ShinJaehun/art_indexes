@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Optional
 
 try:
     from bs4 import BeautifulSoup
@@ -6,6 +7,38 @@ except Exception:
     BeautifulSoup = None
 
 from thumbs import _safe_name as _thumb_safe_name
+
+
+def _append_fs_thumb_if_missing(
+    soup: "BeautifulSoup",
+    tw,  # thumb-wrap 노드
+    folder: str,
+    resource_dir: Path,
+) -> None:
+    """
+    파일시스템에 썸네일이 있으면 <img.thumb src="resource/<folder>/thumbs/<safe>.jpg">를
+    thumb-wrap(tw)에 '존재하지 않는 경우에만' 추가한다.
+    """
+    if tw is None:
+        return
+    # 이미 썸네일이 있으면 무시
+    if tw.find("img", class_="thumb"):
+        return
+
+    safe = _thumb_safe_name(folder)
+    jpg = resource_dir / folder / "thumbs" / f"{safe}.jpg"
+    if not jpg.exists():
+        return
+
+    img = soup.new_tag(
+        "img",
+        **{
+            "class": "thumb",
+            "src": f"resource/{folder}/thumbs/{safe}.jpg",
+            "alt": "썸네일",
+        },
+    )
+    tw.append(img)
 
 
 def ensure_thumb_in_head(div_html: str, folder: str, resource_dir: Path) -> str:
@@ -20,19 +53,7 @@ def ensure_thumb_in_head(div_html: str, folder: str, resource_dir: Path) -> str:
         tw = soup.new_tag("div", **{"class": "thumb-wrap"})
         head.append(tw)
 
-    if not tw.find("img"):
-        safe = _thumb_safe_name(folder)
-        jpg = resource_dir / folder / "thumbs" / f"{safe}.jpg"
-        if jpg.exists():
-            img = soup.new_tag(
-                "img",
-                **{
-                    "class": "thumb",
-                    "src": f"resource/{folder}/thumbs/{safe}.jpg",
-                    "alt": "썸네일",
-                },
-            )
-            tw.append(img)
+    _append_fs_thumb_if_missing(soup, tw, folder, resource_dir)
     return str(soup)
 
 
@@ -56,21 +77,7 @@ def inject_thumbs_for_preview(html: str, resource_dir: Path) -> str:
             tw = soup.new_tag("div", **{"class": "thumb-wrap"})
             head.append(tw)
 
-        if tw.find("img"):
-            continue
-
-        safe = _thumb_safe_name(folder)
-        jpg = resource_dir / folder / "thumbs" / f"{safe}.jpg"
-        if jpg.exists():
-            img = soup.new_tag(
-                "img",
-                **{
-                    "class": "thumb",
-                    "src": f"resource/{folder}/thumbs/{safe}.jpg",
-                    "alt": "썸네일",
-                },
-            )
-            tw.append(img)
+        _append_fs_thumb_if_missing(soup, tw, folder, resource_dir)
 
     return str(soup)
 
@@ -80,6 +87,8 @@ def persist_thumbs_in_master(html: str, resource_dir: Path) -> str:
     if BeautifulSoup is None:
         return html
 
+    # NOTE: 일부 환경에서 'html.parser'가 더 보편적입니다.
+    # 오탈자 방지를 위해 아래 라인을 사용하세요:
     soup = BeautifulSoup(html or "", "html.parser")
 
     for div in soup.find_all("div", class_="folder"):
@@ -101,35 +110,26 @@ def persist_thumbs_in_master(html: str, resource_dir: Path) -> str:
             tw = soup.new_tag("div", **{"class": "thumb-wrap"})
             head.append(tw)
 
-        # .inner에 있는 썸네일 후보를 head로 이동
-        candidates = []
-        for img in div.find_all("img"):
-            src = img.get("src", "")
-            if img is tw.find("img"):
-                continue
-            if (
-                "thumbs/" in src
-                or "thumb" in (img.get("class") or [])
-                or img.get("alt", "") == "썸네일"
-            ):
-                candidates.append(img)
-        if candidates and not tw.find("img"):
-            tw.append(candidates[0])
+        # .inner에 있는 썸네일 후보를 head로 이동 (이미 tw에 썸네일이 없을 때만)
+        if not tw.find("img", class_="thumb"):
+            candidates = []
+            for img in div.find_all("img"):
+                if img is tw.find("img", class_="thumb"):
+                    continue
+                src = (img.get("src") or "").lower()
+                cls = img.get("class") or []
+                if (
+                    ("thumbs/" in src)
+                    or ("thumb" in cls)
+                    or (img.get("alt", "") == "썸네일")
+                ):
+                    candidates.append(img)
+            if candidates and not tw.find("img", class_="thumb"):
+                # 첫 번째 후보만 이동
+                tw.append(candidates[0])
 
-        # 파일시스템 기준 보강
-        if not tw.find("img"):
-            safe = _thumb_safe_name(folder)
-            jpg = resource_dir / folder / "thumbs" / f"{safe}.jpg"
-            if jpg.exists():
-                img = soup.new_tag(
-                    "img",
-                    **{
-                        "class": "thumb",
-                        "src": f"resource/{folder}/thumbs/{safe}.jpg",
-                        "alt": "썸네일",
-                    },
-                )
-                tw.append(img)
+        # 파일시스템 기준 보강 (여전히 없으면 FS에서 채움)
+        _append_fs_thumb_if_missing(soup, tw, folder, resource_dir)
 
         # 편집용 속성 정리
         for el in [div, head, tw] + list(div.find_all(True)):

@@ -2,6 +2,8 @@
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => Array.from(el.querySelectorAll(s));
 
+let _loadingMaster = false;
+let _bridgeReadyOnce = false;
 let hasBridge = false;
 let _toolbarWired = false;
 let _statusTimer = null;
@@ -277,6 +279,8 @@ function detectBridge() {
 }
 
 async function onBridgeReady() {
+  if (_bridgeReadyOnce) return;
+  _bridgeReadyOnce = true;
   detectBridge();
   await loadMaster();
 }
@@ -314,25 +318,39 @@ window.addEventListener("pywebviewready", onBridgeReady);
 
 async function call(method, ...args) {
   if (!hasBridge) throw new Error("pywebview bridge not available");
-  return await window.pywebview.api[method](...args);
+  try {
+    return await window.pywebview.api[method](...args);
+  } catch (e) {
+    console.error(`[bridge:${method}]`, e);
+    throw e;
+  }
 }
 
 async function loadMaster() {
-  if (hasBridge) {
-    const { html } = await call("get_master");
-    $("#content").innerHTML = html || "<p>내용 없음</p>";
-  } else {
-    const blocks = $$(".folder", document);
-    $("#content").innerHTML = "";
-    if (blocks.length) {
-      for (const b of blocks) $("#content").appendChild(b.cloneNode(true));
+  if (_loadingMaster) return;
+  _loadingMaster = true;
+  try {
+    if (hasBridge) {
+      const { html } = await call("get_master");
+      $("#content").innerHTML = html || "<p>내용 없음</p>";
     } else {
-      $("#content").innerHTML = `<p class="hint">브라우저 미리보기: <code>.folder</code> 블록이 없습니다.</p>`;
+      const blocks = $$(".folder", document);
+      $("#content").innerHTML = "";
+      if (blocks.length) {
+        for (const b of blocks) $("#content").appendChild(b.cloneNode(true));
+      } else {
+        $("#content").innerHTML = `<p class="hint">브라우저 미리보기: <code>.folder</code> 블록이 없습니다.</p>`;
+      }
     }
+    enhanceBlocks();
+    wireGlobalToolbar();
+    clearStatus();
+  } catch (e) {
+    console.error(e);
+    showStatus({ level: "error", title: "로드 실패", lines: [String(e?.message || e)] });
+  } finally {
+    _loadingMaster = false;
   }
-  enhanceBlocks();
-  wireGlobalToolbar();
-  clearStatus();
 }
 
 function enhanceBlocks() {

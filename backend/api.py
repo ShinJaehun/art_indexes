@@ -141,16 +141,20 @@ class MasterApi:
         block_count = 0
         resource_dir = self._p_resource_dir()
 
-        folders_for_master: list[dict] = []
+        folders_for_master: list[dict[str, Any]] = []
 
         for div in soup.find_all("div", class_="folder"):
             h2 = div.find("h2")
             if not h2:
                 continue
             folder = h2.get_text(strip=True)
+            if not folder:
+                # 빈 제목(이상치) 방어: 스킵하고 로그만 남김
+                print("[push] WARN: empty <h2> text in a .folder block; skipped")
+                continue
             block_count += 1
 
-            # AC2: snatizer 메트릭 활성화
+            # AC2: sanitizer 메트릭 활성화
             cleaned_div_html, san_m = sanitize_for_publish(
                 str(div), return_metrics=True
             )
@@ -222,7 +226,7 @@ class MasterApi:
         master_html = render_master_index(folders_for_master)
         self._write(self._p_resource_master(), master_html)
 
-        print(f"[push] blocks={block_count} ok=True")
+        print(f"[push] ok=True blocks={block_count}")
         return block_count
 
     # ---- 동기화 ----
@@ -299,13 +303,6 @@ class MasterApi:
         metrics["durationMs"] = int((time.perf_counter() - t0) * 1000)
 
         # AC2: sanitizer 누적치 반영
-        san = getattr(self, "_san_metrics", None) or {}
-        metrics["sanRemovedNodes"] = san.get("removed_nodes", 0)
-        metrics["sanRemovedAttrs"] = san.get("removed_attrs", 0)
-        metrics["sanUnwrappedTags"] = san.get("unwrapped_tags", 0)
-        metrics["sanBlockedUrls"] = san.get("blocked_urls", 0)
-
-        # AC2: 누적치 반영
         san = getattr(self, "_san_metrics", None) or {}
         metrics["sanRemovedNodes"] = san.get("removed_nodes", 0)
         metrics["sanRemovedAttrs"] = san.get("removed_attrs", 0)

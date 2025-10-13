@@ -1,7 +1,7 @@
 from __future__ import annotations
 from pathlib import Path
 import subprocess, sys, shlex
-import tempfile, os, shutil
+import tempfile
 import re, unicodedata
 
 # ANNO: Windows 배포를 전제로 exe 동봉 경로를 우선 탐색하되, PATH에도 의존 가능.
@@ -17,8 +17,8 @@ PDFINFO_EXE = BIN_DIR / "poppler" / "pdfinfo.exe"  # ← 페이지 수 조회용
 def _run(cmd: list[str]) -> tuple[int, str, str]:
     """
     모든 외부 도구 호출의 출력은 바이너리로 받고, UTF-8로 디코드(errors='ignore').
-    - Windows 로케일(cp949)에서도 멀쩡히 동작
-    - 한글/이모지 등 섞여 있어도 스레드 예외 없이 안전
+    - Windows 로케일(cp949)에서도 안전
+    - 한글/이모지 섞여도 예외 없이 디코드
     """
     try:
         p = subprocess.run(cmd, capture_output=True, text=False, shell=False)
@@ -33,7 +33,6 @@ def _run(cmd: list[str]) -> tuple[int, str, str]:
 
 def _safe_name(name: str) -> str:
     # 폴더 → 썸네일 파일명 규칙: 공백은 _ 로, 금지문자는 _ 로
-    # HAZARD: build_art_indexes.safe_name과 규칙 차이 주의(일관화 필요). 지금은 변경하지 않음.
     # 유니코드 표준화(NFKC)로 보기엔 공백인데 다른 문자 문제 완화
     name = unicodedata.normalize("NFKC", name)
     # 모든 공백류(스페이스, 탭, NBSP, 얇은공백 등)를 '_'로
@@ -59,7 +58,7 @@ def _ascii_tmp_prefix(out_jpg: Path) -> tuple[Path, Path]:
     r"""
     ASCII 전용 임시 디렉터리에 파일 prefix를 만든다.
     반환: (tmp_dir, tmp_prefix)
-    예) C:\\Users\\<me>\\AppData\\Local\\Temp\\pdfthumb_tmp\\out_temp_pdfthumb
+    예) C:\Users\<me>\AppData\Local\Temp\pdfthumb_tmp\out_temp_pdfthumb
     """
     base_tmp = Path(tempfile.gettempdir()) / "pdfthumb_tmp"
     base_tmp.mkdir(parents=True, exist_ok=True)
@@ -99,10 +98,6 @@ def _pdf_num_pages(pdf_path: Path) -> int | None:
         return None
     except Exception:
         return None
-
-
-# --- thumbs.py 내 기존 make_pdf_thumb(...) 함수만 아래 코드로 교체 ---
-# ANNO: 실제로는 교체가 이루어진 상태로 보임. 여기서는 주석만.
 
 
 def make_pdf_thumb(pdf_path: Path, out_jpg: Path, dpi: int = 144) -> bool:

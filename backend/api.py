@@ -1,10 +1,12 @@
 from pathlib import Path
-from typing import Dict, Any, Union
+from typing import Dict, Any, Union, List
 import re
 import time
 import os
+import traceback
 
 from fsutil import atomic_write_text
+from lockutil import SyncLock, SyncLockError
 
 from thumbs import make_thumbnail_for_folder
 from builder import run_sync_all, render_master_index, render_child_index
@@ -35,6 +37,8 @@ ROOT_MASTER = "master_index.html"
 # sanitizer 로그 토글
 SAN_VERBOSE = os.getenv("ARTIDX_SAN_VERBOSE") == "1"
 
+DEFAULT_LOCK_PATH = Path("backend/.sync.lock")
+
 
 # -------- 메인 API --------
 class MasterApi:
@@ -47,11 +51,21 @@ class MasterApi:
 
     def __init__(self, base_dir: Union[str, Path]):
         base_dir = Path(base_dir).resolve()
+
         # 외부 노출은 문자열만 (pywebview 안전)
         self._base_dir_str = str(base_dir)
         self._master_file_str = str(base_dir / "master_content.html")
         self._resource_dir_str = str(base_dir / "resource")
         self._resource_master_str = str(Path(self._resource_dir_str) / ROOT_MASTER)
+
+        super().__init__() if hasattr(super(), "__init__") else None
+        # ENV로 락 경로 오버라이드 허용(멀티 인스턴스/테스트 편의)
+        env_lock = os.getenv("ARTIDX_LOCK_PATH")
+        self._lock_path = (
+            Path(env_lock)
+            if env_lock
+            else getattr(self, "_lock_path", DEFAULT_LOCK_PATH)
+        )
 
     # ---- 내부 Path 헬퍼 ----
     def _p_base_dir(self) -> Path:
@@ -73,6 +87,8 @@ class MasterApi:
 
     def _write(self, p: Union[str, Path], s: str) -> None:
         # 모든 산출물 저장은 원자적 write로 고정
+        p = Path(p)
+        p.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(str(p), s, encoding="utf-8", newline="\n")
 
     # ---- 로드 / 저장 ----
@@ -140,7 +156,7 @@ class MasterApi:
         block_count = 0
         resource_dir = self._p_resource_dir()
 
-        folders_for_master: list[dict[str, Any]] = []
+        folders_for_master: List[Dict[str, Any]] = []
 
         for div in soup.find_all("div", class_="folder"):
             h2 = div.find("h2")
@@ -231,100 +247,171 @@ class MasterApi:
 
     # ---- 동기화 ----
     def sync(self) -> Dict[str, Any]:
+        """
+        Lock & Error Safety 적용 + print 로깅
+        - 중복 실행 방지: backend/.sync.lock 파일 기반
+        - 예외 발생 시 반환하고, traceback 일부를 errors에 포함
+        - 기존 메트릭/리턴 형태 최대한 유지
+        """
         t0 = time.perf_counter()
         base = self._p_base_dir()
         resource = self._p_resource_dir()
         print(f"[sync] start base={base} resource={resource}")
 
-        errors: list[str] = []
-        metrics: Dict[str, Any] = {
-            "foldersAdded": 0,
-            "blocksUpdated": 0,
-            "scanRc": None,
-            "durationMs": None,
-            "sanRemovedNodes": 0,
-            "sanRemovedAttrs": 0,
-            "sanUnwrappedTags": 0,
-            "sanBlockedUrls": 0,
-        }
+        # 잠금 만료시간(초): 기본 3600, 환경변수로 조절 가능
+        stale_after = int(os.getenv("ARTIDX_LOCK_STALE_AFTER", "3600"))
 
-        # sanitizer 누적치 초기화
-        self._san_metrics = {
-            "removed_nodes": 0,
-            "removed_attrs": 0,
-            "unwrapped_tags": 0,
-            "blocked_urls": 0,
-        }
+        try:
+            with SyncLock(self._lock_path, stale_after=stale_after):
+                # -----------------------------
+                # 기존 sync
+                # -----------------------------
+                errors: list[str] = []
+                metrics: Dict[str, Any] = {
+                    "foldersAdded": 0,
+                    "blocksUpdated": 0,
+                    "scanRc": None,
+                    "durationMs": None,
+                    "sanRemovedNodes": 0,
+                    "sanRemovedAttrs": 0,
+                    "sanUnwrappedTags": 0,
+                    "sanBlockedUrls": 0,
+                }
 
-        # 1) 썸네일/리소스 스캔
-        scan_rc = run_sync_all(resource_dir=self._p_resource_dir(), thumb_width=640)
-        scan_ok = scan_rc == 0
-        metrics["scanRc"] = scan_rc
-        print(f"[scan] ok={scan_ok} rc={scan_rc}")
+                # sanitizer 누적치 초기화
+                self._san_metrics = {
+                    "removed_nodes": 0,
+                    "removed_attrs": 0,
+                    "unwrapped_tags": 0,
+                    "blocked_urls": 0,
+                }
 
-        # DEBUG: 강제 실패 주입
-        forced_scan_fail = os.getenv("ARTIDX_FAIL_SCAN") == "1"
-        if forced_scan_fail:
-            scan_ok = False
-            metrics["scanRc"] = -1
+                # 1) 썸네일/리소스 스캔
+                scan_rc = run_sync_all(
+                    resource_dir=self._p_resource_dir(), thumb_width=640
+                )
+                scan_ok = scan_rc == 0
+                metrics["scanRc"] = scan_rc
+                print(f"[scan] ok={scan_ok} rc={scan_rc}")
 
-        if not scan_ok:
-            errors.append(
-                "DEBUG: ARTIDX_FAIL_SCAN=1로 인해 스캔을 실패로 강제 설정"
-                if forced_scan_fail
-                else f"썸네일/리소스 스캔 실패(rc={metrics['scanRc']})"
+                # DEBUG: 강제 실패 주입
+                forced_scan_fail = os.getenv("ARTIDX_FAIL_SCAN") == "1"
+                if forced_scan_fail:
+                    scan_ok = False
+                    metrics["scanRc"] = -1
+
+                if not scan_ok:
+                    errors.append(
+                        "DEBUG: ARTIDX_FAIL_SCAN=1로 인해 스캔을 실패로 강제 설정"
+                        if forced_scan_fail
+                        else f"썸네일/리소스 스캔 실패(rc={metrics['scanRc']})"
+                    )
+
+                # 2) 신규 폴더를 master_content에 자동 머지
+                try:
+                    added = self._ensure_new_folders_in_master()
+                    if added > 0:
+                        metrics["foldersAdded"] = added
+                        print(f"[merge] added folders={added}")
+                except Exception as e:
+                    errors.append(f"신규 폴더 자동 병합 실패: {e}")
+                    print(f"[merge] failed: {e}")
+
+                # 3) 푸시
+                push_ok = True
+                block_count = 0
+                try:
+                    if os.getenv("ARTIDX_FAIL_PUSH") == "1":
+                        raise RuntimeError("DEBUG: ARTIDX_FAIL_PUSH=1 강제 푸시 예외")
+
+                    block_count = self._push_master_to_resource()
+                    metrics["blocksUpdated"] = block_count
+                except Exception as e:
+                    push_ok = False
+                    errors.append(f"파일 반영(푸시) 실패: {e}")
+                    print(f"[push] failed: {e}")
+
+                ok = scan_ok and push_ok
+                metrics["durationMs"] = int((time.perf_counter() - t0) * 1000)
+
+                # sanitizer 누적치 반영
+                san = getattr(self, "_san_metrics", None) or {}
+                metrics["sanRemovedNodes"] = san.get("removed_nodes", 0)
+                metrics["sanRemovedAttrs"] = san.get("removed_attrs", 0)
+                metrics["sanUnwrappedTags"] = san.get("unwrapped_tags", 0)
+                metrics["sanBlockedUrls"] = san.get("blocked_urls", 0)
+
+                print(
+                    f"[sync] done ok={ok} scanOk={scan_ok} pushOk={push_ok} "
+                    f"blocks={block_count} durationMs={metrics['durationMs']} "
+                    f"sanRemovedNodes={metrics['sanRemovedNodes']} "
+                    f"sanRemovedAttrs={metrics['sanRemovedAttrs']} "
+                    f"sanUnwrappedTags={metrics['sanUnwrappedTags']} "
+                    f"sanBlockedUrls={metrics['sanBlockedUrls']}"
+                )
+
+                # 디버그 강제 실패 플래그가 켜져있다면 추가 표기
+                dbg_flags = []
+                if os.getenv("ARTIDX_FAIL_SCAN") == "1":
+                    dbg_flags.append("FAIL_SCAN")
+                if os.getenv("ARTIDX_FAIL_PUSH") == "1":
+                    dbg_flags.append("FAIL_PUSH")
+                if dbg_flags:
+                    print(f"[sync] debugFlags={','.join(dbg_flags)}")
+
+                return {
+                    "ok": ok,
+                    "scanOk": scan_ok,
+                    "pushOk": push_ok,
+                    "errors": errors,
+                    "metrics": metrics,
+                }
+
+        except SyncLockError as e:
+            # 다른 프로세스/스레드가 실행 중이거나 스테일 락 해제 실패 등
+            duration_ms = int((time.perf_counter() - t0) * 1000)
+            print(
+                f"[sync] LOCKED: {e} (lock={self._lock_path}, stale_after={stale_after}s)"
             )
+            return {
+                "ok": False,
+                "scanOk": None,
+                "pushOk": None,
+                "errors": ["locked"],
+                "metrics": {
+                    "durationMs": duration_ms,
+                    "foldersAdded": 0,
+                    "blocksUpdated": 0,
+                    "scanRc": None,
+                    "sanRemovedNodes": 0,
+                    "sanRemovedAttrs": 0,
+                    "sanUnwrappedTags": 0,
+                    "sanBlockedUrls": 0,
+                },
+                "locked": True,
+            }
 
-        # 2) 신규 폴더를 master_content에 자동 머지
-        try:
-            added = self._ensure_new_folders_in_master()
-            if added > 0:
-                metrics["foldersAdded"] = added
-                print(f"[merge] added folders={added}")
         except Exception as e:
-            errors.append(f"신규 폴더 자동 병합 실패: {e}")
-            print(f"[merge] failed: {e}")
-
-        # 3) 푸시
-        push_ok = True
-        block_count = 0
-        try:
-            if os.getenv("ARTIDX_FAIL_PUSH") == "1":
-                raise RuntimeError("DEBUG: ARTIDX_FAIL_PUSH=1 강제 푸시 예외")
-
-            block_count = self._push_master_to_resource()
-            metrics["blocksUpdated"] = block_count
-        except Exception as e:
-            push_ok = False
-            errors.append(f"파일 반영(푸시) 실패: {e}")
-            print(f"[push] failed: {e}")
-
-        ok = scan_ok and push_ok
-        metrics["durationMs"] = int((time.perf_counter() - t0) * 1000)
-
-        # sanitizer 누적치 반영
-        san = getattr(self, "_san_metrics", None) or {}
-        metrics["sanRemovedNodes"] = san.get("removed_nodes", 0)
-        metrics["sanRemovedAttrs"] = san.get("removed_attrs", 0)
-        metrics["sanUnwrappedTags"] = san.get("unwrapped_tags", 0)
-        metrics["sanBlockedUrls"] = san.get("blocked_urls", 0)
-
-        print(
-            f"[sync] done ok={ok} scanOk={scan_ok} pushOk={push_ok} "
-            f"blocks={block_count} durationMs={metrics['durationMs']} "
-            f"sanRemovedNodes={metrics['sanRemovedNodes']} "
-            f"sanRemovedAttrs={metrics['sanRemovedAttrs']} "
-            f"sanUnwrappedTags={metrics['sanUnwrappedTags']} "
-            f"sanBlockedUrls={metrics['sanBlockedUrls']}"
-        )
-
-        return {
-            "ok": ok,
-            "scanOk": scan_ok,
-            "pushOk": push_ok,
-            "errors": errors,
-            "metrics": metrics,
-        }
+            # 예기치 못한 예외도 print로 확인 가능하게
+            duration_ms = int((time.perf_counter() - t0) * 1000)
+            tb = traceback.format_exc(limit=5)
+            print(f"[sync] EXCEPTION: {e}\n{tb}")
+            return {
+                "ok": False,
+                "scanOk": None,
+                "pushOk": False,
+                "errors": [f"exception: {e}", tb.strip()],
+                "metrics": {
+                    "durationMs": duration_ms,
+                    "foldersAdded": 0,
+                    "blocksUpdated": 0,
+                    "scanRc": None,
+                    "sanRemovedNodes": 0,
+                    "sanRemovedAttrs": 0,
+                    "sanUnwrappedTags": 0,
+                    "sanBlockedUrls": 0,
+                },
+            }
 
     # ---- (옵션) 리빌드 → master_content 초기화 ----
     def rebuild_master(self) -> Dict[str, Any]:

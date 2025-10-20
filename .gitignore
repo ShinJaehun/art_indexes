@@ -13,6 +13,12 @@ backend/bin/*
 # 과거 스크립트 모음 제외
 old scripts/
 
+# 생성물 제외
+backend/master_content.html
+master_content.html
+resource/master_index.html
+resource/**/index.html
+
 # -----------------------------
 # Python
 # -----------------------------

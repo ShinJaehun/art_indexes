@@ -54,8 +54,8 @@ def main():
         resizable=True,
     )
 
-    # webview.start()
-    webview.start(debug=True)
+    webview.start()
+    # webview.start(debug=True)
 
 
 if __name__ == "__main__":

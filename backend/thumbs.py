@@ -3,15 +3,16 @@ from pathlib import Path
 import subprocess, sys, shlex
 import tempfile
 import re, unicodedata
+from io import BytesIO
+import os
+from fsutil import atomic_write_bytes
 
 # ANNO: Windows 배포를 전제로 exe 동봉 경로를 우선 탐색하되, PATH에도 의존 가능.
 BASE_DIR = Path(__file__).parent
 BIN_DIR = BASE_DIR / "bin"
 FFMPEG_EXE = BIN_DIR / "ffmpeg.exe"
-PDFTOPPM_EXE = (
-    BIN_DIR / "poppler" / "pdftoppm.exe"
-)  # ← poppler/bin 통째로 복사한 폴더 안
-PDFINFO_EXE = BIN_DIR / "poppler" / "pdfinfo.exe"  # ← 페이지 수 조회용(있으면 사용)
+PDFTOPPM_EXE = BIN_DIR / "poppler" / "pdftoppm.exe"  # bin/poppler
+PDFINFO_EXE = BIN_DIR / "poppler" / "pdfinfo.exe"  # 페이지 수 조회용
 
 
 def _run(cmd: list[str]) -> tuple[int, str, str]:
@@ -78,7 +79,7 @@ def _cleanup_tmp_dir(tmp_dir: Path):
 def _pdf_num_pages(pdf_path: Path) -> int | None:
     pdfinfo = _which(PDFINFO_EXE, "pdfinfo")
     try:
-        # ✅ 강제 UTF-8 + 에러 무시 (Windows cp949 문제 회피)
+        # 강제 UTF-8 + 에러 무시 (Windows cp949 문제 회피)
         p = subprocess.run(
             [pdfinfo, str(pdf_path)],
             capture_output=True,
@@ -109,7 +110,7 @@ def make_pdf_thumb(pdf_path: Path, out_jpg: Path, dpi: int = 144) -> bool:
     n_pages = _pdf_num_pages(pdf_path)
     mid_page = 1 if not n_pages or n_pages <= 0 else max(1, (n_pages + 1) // 2)
 
-    # ✅ ASCII-only 임시 폴더 사용
+    # ASCII-only 임시 폴더 사용
     tmp_dir, tmp_prefix = _ascii_tmp_prefix(out_jpg)
 
     cmd = [
@@ -146,7 +147,6 @@ def make_pdf_thumb(pdf_path: Path, out_jpg: Path, dpi: int = 144) -> bool:
     cand2 = tmp_prefix.with_name(tmp_prefix.name + f"-{mid_page}").with_suffix(".jpg")
     made = cand1 if cand1.exists() else (cand2 if cand2.exists() else None)
     if not made:
-        # 안전망
         alts = list(tmp_dir.glob(tmp_prefix.name + "*.jpg"))
         made = alts[0] if alts else None
         if not made:
@@ -154,8 +154,10 @@ def make_pdf_thumb(pdf_path: Path, out_jpg: Path, dpi: int = 144) -> bool:
             _cleanup_tmp_dir(tmp_dir)
             return False
 
+    # temp 파일을 메모리로 읽어 원자 저장
     try:
-        Path(made).replace(out_jpg)
+        data = Path(made).read_bytes()
+        atomic_write_bytes(str(out_jpg), data)
         print(f"[thumb] PDF->JPG OK (mid={mid_page}): {out_jpg}")
         return True
     finally:
@@ -166,34 +168,52 @@ def make_video_thumb(video_path: Path, out_jpg: Path, width: int = 640) -> bool:
     out_jpg.parent.mkdir(parents=True, exist_ok=True)
     exe = FFMPEG_EXE if FFMPEG_EXE.exists() else Path("ffmpeg")
     vf = f"thumbnail,scale={width}:-1"
-    cmd = [
-        str(exe),
-        "-y",
-        "-ss",
-        "00:00:01",  # 초반 검은 화면 회피
-        "-i",
-        str(video_path),
-        "-vframes",
-        "1",
-        "-vf",
-        vf,
-        str(out_jpg),
-    ]
-    rc, out, err = _run(cmd)
-    if rc != 0:
-        print(
-            f"[thumb] VIDEO->JPG FAIL rc={rc}\nCMD: {shlex.join(cmd)}\nSTDERR:\n{err}",
-            file=sys.stderr,
-        )
-        return False
 
-    ok = out_jpg.exists()
-    print(
-        f"[thumb] VIDEO->JPG OK: {out_jpg}"
-        if ok
-        else f"[thumb] VIDEO->JPG MISSING: {out_jpg}"
-    )
-    return ok
+    # 임시 파일에 먼저 생성(어떤 드라이브여도 OK) → 메모리 로드 → atomic_write_bytes
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix="vidthumb_", suffix=".jpg")
+    os_tmp_path = Path(tmp_path)
+
+    # ffmpeg 실행 전 FD 닫기(Windows 파일 잠금 방지)
+    try:
+        os.close(tmp_fd)
+    except Exception:
+        pass
+
+    try:
+        cmd = [
+            str(exe),
+            "-y",
+            "-ss",
+            "00:00:01",  # 초반 검은 화면 회피
+            "-i",
+            str(video_path),
+            "-vframes",
+            "1",
+            "-vf",
+            vf,
+            str(os_tmp_path),
+        ]
+        rc, out, err = _run(cmd)
+        if rc != 0:
+            print(
+                f"[thumb] VIDEO->JPG FAIL rc={rc}\nCMD: {shlex.join(cmd)}\nSTDERR:\n{err}",
+                file=sys.stderr,
+            )
+            return False
+
+        if not os_tmp_path.exists():
+            print(f"[thumb] VIDEO->JPG MISSING: {out_jpg}", file=sys.stderr)
+            return False
+
+        data = os_tmp_path.read_bytes()
+        atomic_write_bytes(str(out_jpg), data)
+        print(f"[thumb] VIDEO->JPG OK: {out_jpg}")
+        return True
+    finally:
+        try:
+            os_tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def make_thumbnail_for_folder(folder: Path, max_width: int = 640) -> bool:
@@ -206,11 +226,17 @@ def make_thumbnail_for_folder(folder: Path, max_width: int = 640) -> bool:
 
                 out = folder / "thumbs" / f"{_safe_name(folder.name)}.jpg"
                 out.parent.mkdir(exist_ok=True)
+
                 with Image.open(img) as im:
                     w, h = im.size
                     if w > max_width:
-                        im = im.resize((max_width, int(h * (max_width / w))))
-                    im.convert("RGB").save(out, "JPEG", quality=88)
+                        im = im.resize(
+                            (max_width, int(h * (max_width / w))), Image.LANCZOS
+                        )
+                    buf = BytesIO()
+                    im.convert("RGB").save(buf, "JPEG", quality=88, optimize=True)
+                    atomic_write_bytes(str(out), buf.getvalue())
+
                 print(f"[thumb] OK (image): {out}")
                 return True
             except Exception as e:

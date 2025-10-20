@@ -2,7 +2,9 @@ from pathlib import Path
 from typing import Dict, Any, Union
 import re
 import time
-import os  # TODO: fail 테스트 끝나면 제거
+import os
+
+from fsutil import atomic_write_text
 
 from thumbs import make_thumbnail_for_folder
 from builder import run_sync_all, render_master_index, render_child_index
@@ -29,9 +31,8 @@ except Exception:
 
 # -------- 상수 --------
 ROOT_MASTER = "master_index.html"
-FOLDER_INDEX = "index.html"
 
-# AC2: sanitizer 로그 토글
+# sanitizer 로그 토글
 SAN_VERBOSE = os.getenv("ARTIDX_SAN_VERBOSE") == "1"
 
 
@@ -71,9 +72,8 @@ class MasterApi:
         return p.read_text(encoding="utf-8") if p.exists() else ""
 
     def _write(self, p: Union[str, Path], s: str) -> None:
-        p = Path(p)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(s, encoding="utf-8")
+        # 모든 산출물 저장은 원자적 write로 고정
+        atomic_write_text(str(p), s, encoding="utf-8", newline="\n")
 
     # ---- 로드 / 저장 ----
     def get_master(self) -> Dict[str, Any]:
@@ -105,14 +105,13 @@ class MasterApi:
 
         fixed = persist_thumbs_in_master(html, self._p_resource_dir())
 
-        # ✅ 추가: 저장 전에 .inner 내부의 &lt;...&gt;를 '허용 태그'만 실제 태그로 복원
+        # 저장 전에 .inner 내부의 &lt;...&gt;를 '허용 태그'만 실제 태그로 복원
         if BeautifulSoup is not None:
             soup = BeautifulSoup(fixed, "html.parser")
-            _safe_unescape_tag_texts_in_inner(
-                soup
-            )  # ← 핵심: 엔티티로 들어온 <a> 등을 실제 노드로 변환
+            # 엔티티로 들어온 <a> 등을 실제 노드로 변환
+            _safe_unescape_tag_texts_in_inner(soup)
 
-            # ✅ href 정규화: 스킴 없는 외부 도메인에 https:// 붙이기
+            # href 정규화: 스킴 없는 외부 도메인에 https:// 붙이기
             for a in soup.select(".inner a[href]"):
                 href = (a.get("href") or "").strip()
                 if href and not re.match(
@@ -149,15 +148,16 @@ class MasterApi:
                 continue
             folder = h2.get_text(strip=True)
             if not folder:
-                # 빈 제목(이상치) 방어: 스킵하고 로그만 남김
+                # 빈 제목 방어: 스킵하고 로그만 남김
                 print("[push] WARN: empty <h2> text in a .folder block; skipped")
                 continue
             block_count += 1
 
-            # AC2: sanitizer 메트릭 활성화
+            # sanitizer 메트릭 활성화
             cleaned_div_html, san_m = sanitize_for_publish(
                 str(div), return_metrics=True
             )
+
             # 누적치를 sync 메트릭으로 올리기 위해 임시 저장
             # self._san_metrics는 sync() 호출마다 초기화
             if not hasattr(self, "_san_metrics"):
@@ -170,7 +170,7 @@ class MasterApi:
             for k, v in san_m.items():
                 self._san_metrics[k] += v
 
-            # (옵션) 폴더별 상세 로그
+            # 폴더별 상세 로그
             if SAN_VERBOSE and any(san_m.values()):
                 print(
                     f"[san] folder='{folder}' "
@@ -242,13 +242,13 @@ class MasterApi:
             "blocksUpdated": 0,
             "scanRc": None,
             "durationMs": None,
-            "sanRemovedNodes": 0,  # AC2: sanitizer 메트릭
-            "sanRemovedAttrs": 0,  # AC2: sanitizer 메트릭
-            "sanUnwrappedTags": 0,  # AC2: sanitizer 메트릭
-            "sanBlockedUrls": 0,  # AC2: sanitizer 메트릭
+            "sanRemovedNodes": 0,
+            "sanRemovedAttrs": 0,
+            "sanUnwrappedTags": 0,
+            "sanBlockedUrls": 0,
         }
 
-        # AC2: sanitizer 누적치 초기화
+        # sanitizer 누적치 초기화
         self._san_metrics = {
             "removed_nodes": 0,
             "removed_attrs": 0,
@@ -302,7 +302,7 @@ class MasterApi:
         ok = scan_ok and push_ok
         metrics["durationMs"] = int((time.perf_counter() - t0) * 1000)
 
-        # AC2: sanitizer 누적치 반영
+        # sanitizer 누적치 반영
         san = getattr(self, "_san_metrics", None) or {}
         metrics["sanRemovedNodes"] = san.get("removed_nodes", 0)
         metrics["sanRemovedAttrs"] = san.get("removed_attrs", 0)

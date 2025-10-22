@@ -31,14 +31,14 @@ def _folder_block_html(
     inner_html: str,
     thumb_src: str | None = None,
     *,
-    include_toolbar: bool = False,  # 캐시 출력물: False
-    editable: bool = False,  # 캐시 출력물: False
+    include_toolbar: bool = False,
+    editable: bool = False,
 ) -> str:
     toolbar = TOOLBAR_HTML if include_toolbar else ""
+    # 빈 thumb-wrap 제거: 썸네일 있을 때만 출력
     thumb_wrap = (
         f'<div class="thumb-wrap"><img class="thumb" src="{thumb_src}" alt="썸네일"/></div>'
-        if thumb_src
-        else '<div class="thumb-wrap"></div>'
+        if thumb_src else ''
     )
     editable_attr = ' contenteditable="true"' if editable else ""
     editable_cls = " editable" if editable else ""

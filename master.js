@@ -372,14 +372,11 @@ function enhanceBlocks() {
           <button class="btn btnThumb">썸네일 갱신</button>
         `;
       }
-      if (!thumbWrap) {
-        thumbWrap = document.createElement("div");
-        thumbWrap.className = "thumb-wrap";
-      }
 
       if (h2) headEl.appendChild(h2);
       headEl.appendChild(actions);
-      headEl.appendChild(thumbWrap);
+      // thumbWrap은 '필요할 때만' 생성: 아래에서 후보 이미지를 옮길 때 만든다.
+      if (thumbWrap) headEl.appendChild(thumbWrap);
       return { actions, thumbWrap };
     }
 
@@ -393,7 +390,7 @@ function enhanceBlocks() {
       head.className = "folder-head";
       h2.replaceWith(head);
       head.appendChild(h2);
-      const { thumbWrap } = normalizeHead(head);
+      let { thumbWrap } = normalizeHead(head);
 
       // head 다음 형제 중 썸네일 후보를 thumb-wrap으로 이동
       let node = head.nextSibling;
@@ -404,6 +401,11 @@ function enhanceBlocks() {
           (node.matches("img.thumb, img[alt='썸네일']") ||
             (node.tagName === "IMG" && /\/thumbs\//.test(node.getAttribute("src") || "")))
         ) {
+          if (!thumbWrap) {
+            thumbWrap = document.createElement("div");
+            thumbWrap.className = "thumb-wrap";
+            head.appendChild(thumbWrap);
+          }
           thumbWrap.appendChild(node);
         }
         node = next;
@@ -423,9 +425,18 @@ function enhanceBlocks() {
 
       // .inner 안으로 들어간 썸네일이 있다면 다시 head로
       const stray = $(".inner img.thumb, .inner img[alt='썸네일'], .inner img[src*='/thumbs/']", div);
-      if (stray) $(".thumb-wrap", head).appendChild(stray);
+      if (stray) {
+        let tw = $(".thumb-wrap", head);
+        if (!tw) {
+          tw = document.createElement("div");
+          tw.className = "thumb-wrap";
+          head.appendChild(tw);
+        }
+        tw.appendChild(stray);
+      }
 
     } else {
+      // 기존 thumb-wrap이 없으면 만들지 않음(후보가 있을 때만 위에서 생성)
       const head = $(".folder-head", div);
       normalizeHead(head);
     }

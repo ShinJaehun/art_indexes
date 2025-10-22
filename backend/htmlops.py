@@ -1,5 +1,6 @@
 import re
-from typing import Optional
+from typing import List, Dict, Any, Optional
+import os
 
 try:
     from bs4 import BeautifulSoup, Comment
@@ -8,11 +9,121 @@ except Exception:
     Comment = None
 
 ROOT_MASTER = "master_index.html"
+
 _BODY_RE = re.compile(r"<body[^>]*>([\s\S]*?)</body>", re.I)
+
 _SKIP_PREFIX = re.compile(
     r"^(https?://|www\.|(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,}|/|\.\./|#|resource/|mailto:|tel:|data:)",
     re.I,
 )
+
+__all__ = [
+    "extract_folder_blocks",
+    "map_blocks_by_slug",
+]
+
+
+def _make_slug(name: str) -> str:
+    """
+    파일시스템 세이프 슬러그(최소 규칙):
+    - 앞뒤 공백 제거
+    - 경로 구분자 제거('/', os.sep)
+    - 연속 공백 압축 후 공백→'_' 치환
+    """
+    if name is None:
+        name = ""
+    name = str(name).strip().replace(os.sep, " ").replace("/", " ")
+    while "  " in name:
+        name = name.replace("  ", " ")
+    return name.replace(" ", "_")
+
+
+def _text(el) -> str:
+    try:
+        return el.get_text(strip=True)
+    except Exception:
+        return ""
+
+
+def _inner_html(el) -> str:
+    try:
+        # BeautifulSoup: 태그 내부 HTML만 문자열로
+        return "".join(str(c) for c in el.contents)
+    except Exception:
+        return ""
+
+
+def extract_folder_blocks(html: str) -> List[Dict[str, Any]]:
+    """
+    마스터/차일드 HTML에서 <div class="folder"> 블록들을 표준 스키마로 파싱.
+    반환 스키마:
+      [{"slug","title","thumb","html","raw_html"}, ...]
+    """
+    if BeautifulSoup is None:
+        raise RuntimeError(
+            "BeautifulSoup(bs4)가 필요합니다. `pip install beautifulsoup4` 후 다시 시도하세요."
+        )
+
+    soup = BeautifulSoup(html or "", "html.parser")
+    out: List[Dict[str, Any]] = []
+
+    for folder in soup.select("div.folder"):
+        # 1) 제목
+        h2 = folder.select_one(".folder-head h2") or folder.find("h2")
+        title = _text(h2) if h2 else ""
+
+        # 2) 썸네일
+        thumb_img = folder.select_one(".folder-head img.thumb") or folder.select_one(
+            "img.thumb"
+        )
+        thumb: Optional[str] = (
+            thumb_img.get("src") if thumb_img and thumb_img.has_attr("src") else None
+        )
+
+        # 3) 본문(inner)
+        inner = folder.select_one(".inner")
+        inner_html = _inner_html(inner) if inner else ""
+
+        # 4) slug + raw
+        slug = _make_slug(title if title else "folder")
+        raw_html = str(folder)
+
+        out.append(
+            {
+                "slug": slug,
+                "title": title,
+                "thumb": thumb,
+                "html": inner_html,
+                "raw_html": raw_html,
+            }
+        )
+
+    return out
+
+
+def map_blocks_by_slug(blocks: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """
+    블록 리스트를 slug 기준 dict로 변환.
+    slug 충돌 시 뒤 항목이 덮어쓰지 않도록 '-2','-3' 접미사로 디스앰빅 처리.
+    """
+    bucket: Dict[str, Dict[str, Any]] = {}
+    counter: Dict[str, int] = {}
+
+    for b in blocks:
+        slug = b.get("slug") or "folder"
+        if slug in bucket:
+            # disambiguate
+            counter[slug] = counter.get(slug, 1) + 1
+            new_slug = f"{slug}-{counter[slug]}"
+            # 사본을 만들어 slug만 교체
+            b = dict(b)
+            b["slug"] = new_slug
+            bucket[new_slug] = b
+        else:
+            counter[slug] = 1
+            bucket[slug] = b
+
+    return bucket
 
 
 def extract_body_inner(html_text: str) -> str:
@@ -147,14 +258,14 @@ def adjust_paths_for_folder(
             # ★ 맨몸 IMG: src="x.png"  → src="<folder>/x.png"
             div_html = re.sub(
                 r'(<img[^>]+src=")(?!https?://|/|\.\./|#|resource/|mailto:|tel:|data:)([^"]+)"',
-                r"\1" + folder + r"/\2\"",
+                r"\1" + folder + r"/\2" + '"',
                 div_html,
                 flags=re.I,
             )
             # ★ 맨몸 A  : href="file.html" → href="<folder>/file.html"
             div_html = re.sub(
                 r'(<a[^>]+href=")(?!https?://|/|\.\./|#|resource/|mailto:|tel:|data:)([^"]+)"',
-                r"\1" + folder + r"/\2\"",
+                r"\1" + folder + r"/\2" + '"',
                 div_html,
                 flags=re.I,
             )

@@ -1,5 +1,8 @@
 from pathlib import Path
 from bs4 import BeautifulSoup
+from typing import Dict, Any, List
+
+import os
 
 TOOLBAR_HTML = """
 <div class="folder-actions">
@@ -11,20 +14,120 @@ TOOLBAR_HTML = """
 """.strip()
 
 
-def run_sync_all(resource_dir: Path, thumb_width: int = 640) -> int:
+def run_sync_all(resource_dir: Path, thumb_width: int = 640, *, scan_only: bool = False) -> int | Dict[str, Any]:
     """
     리소스 전체 썸네일 스캔/생성만 수행(HTML 생성 없음).
+    SSOT 스캔 단일화 + 썸네일 리빌드 엔트리.
+    - scan_only=True: 파일시스템(SSOT)을 스캔하여 표준 JSON을 반환 (읽기 전용).
+    - scan_only=False(기본): 기존처럼 썸네일 스캔/생성만 수행하고 종료 코드(int) 반환.
+
     SSOT: HTML 생성은 MasterApi._push_master_to_resource()만 담당.
     """
+    if scan_only:
+        return scan_ssot(resource_dir)
     try:
         from thumbs import scan_and_make_thumbs
-
         ok = scan_and_make_thumbs(resource_dir, refresh=True, width=thumb_width)
         return 0 if ok else 1
     except Exception as e:
         print(f"❌ internal thumbnail scan failed: {e}")
         return 1
 
+
+def _make_slug(name: str) -> str:
+    """
+    파일시스템 세이프 슬러그(최소 규칙):
+    - 앞뒤 공백 제거
+    - 경로 구분자 제거
+    - 공백 → '_' 치환
+    (한글/숫자/일부 기호는 그대로 둡니다)
+    """
+    name = name.strip().replace(os.sep, " ").replace("/", " ")
+    while "  " in name:
+        name = name.replace("  ", " ")
+    return name.replace(" ", "_")
+
+
+def _iter_thumb_files(thumb_dir: Path):
+    if not thumb_dir.exists() or not thumb_dir.is_dir():
+        return
+    for p in thumb_dir.iterdir():
+        if p.is_file() and not p.name.startswith("."):
+            yield p
+
+
+def _latest_mtime_of_tree(root: Path) -> float:
+    latest = root.stat().st_mtime if root.exists() else 0.0
+    try:
+        for base, _, files in os.walk(root):
+            for f in files:
+                try:
+                    t = (Path(base) / f).stat().st_mtime
+                    if t > latest:
+                        latest = t
+                except Exception:
+                    # 파일 접근 실패는 무시(스캔 전체 중단 방지)
+                    pass
+    except Exception:
+        pass
+    return latest
+
+
+def scan_ssot(resource_dir: Path) -> Dict[str, Any]:
+    """
+    resource/ 폴더를 SSOT로 스캔하여 표준 JSON 구조를 반환.
+    반환 예:
+    {
+      "folders": [
+        {"slug": "...", "path": "resource/...", "title": "...",
+         "thumb_exists": True, "mtime": 1729570000.0}
+      ],
+      "stats": {"count": 12, "thumbs": 11, "errors": 0}
+    }
+    """
+    folders: List[Dict[str, Any]] = []
+    errors = 0
+
+    try:
+        entries = sorted(
+            [p for p in resource_dir.iterdir() if p.is_dir() and not p.name.startswith(".")],
+            key=lambda p: p.name,
+        )
+    except Exception as e:
+        print(f"❌ [SCAN] failed to list resource dir: {e}")
+        return {"folders": [], "stats": {"count": 0, "thumbs": 0, "errors": 1}}
+
+    thumb_count = 0
+    for d in entries:
+        try:
+            title = d.name.replace("_", " ")
+            slug = _make_slug(d.name)
+            thumbs_dir = d / "thumbs"
+            has_thumb = any(True for _ in _iter_thumb_files(thumbs_dir))
+            if has_thumb:
+                thumb_count += 1
+
+            mtime = _latest_mtime_of_tree(d)
+            rel_path = f"{resource_dir.name}/{d.name}" if d.parent == resource_dir else str(d)
+
+            folders.append(
+                {
+                    "slug": slug,
+                    "path": rel_path,
+                    "title": title,
+                    "thumb_exists": bool(has_thumb),
+                    "mtime": float(mtime),
+                }
+            )
+            print(f"[SCAN] {slug} ✓ (thumb:{'Y' if has_thumb else 'N'})")
+        except Exception as e:
+            errors += 1
+            print(f"[SCAN] {d.name} ⚠️  {e}")
+
+    return {
+        "folders": folders,
+        "stats": {"count": len(folders), "thumbs": thumb_count, "errors": errors},
+    }
 
 def _folder_block_html(
     title: str,

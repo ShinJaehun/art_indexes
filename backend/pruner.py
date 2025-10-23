@@ -6,6 +6,12 @@ from pathlib import Path
 import json
 import re
 import sys
+import os
+
+try:
+    from .fsutil import atomic_write_text
+except ImportError:
+    from fsutil import atomic_write_text
 
 try:
     from bs4 import BeautifulSoup  # type: ignore
@@ -124,7 +130,12 @@ def list_master_content_slugs(path: str | Path = MASTER_CONTENT) -> Set[str]:
 def list_master_index_slugs(path: str | Path = ROOT_MASTER) -> Set[str]:
     p = Path(path)
     if not p.exists():
-        return set()
+        # fallback: 루트의 master_content.html 자동 시도
+        alt = Path("master_content.html")
+        if alt.exists():
+            p = alt
+        else:
+            return set()
     return extract_slugs_from_html(read_text_safe(p))
 
 
@@ -256,6 +267,169 @@ class DiffReporter:
         )
 
 
+# ---- 실제 적용기 -------------------------------------------------------
+
+
+class PruneApplier:
+    """
+    Diff 결과를 실제 파일에 반영한다.
+    - master_content.html : folders_missing_in_fs 제거
+    - child indexes       : child_indexes_missing 재생성
+    - master_index.html   : master_content 기준 재렌더
+    - thumbs_orphans      : 옵션 시 실제 파일 삭제
+    """
+
+    def __init__(
+        self,
+        resource_root: str | Path = DEFAULT_RESOURCE,
+        master_content_path: str | Path = MASTER_CONTENT,
+        master_index_path: str | Path = ROOT_MASTER,
+        delete_thumbs: bool = False,
+    ) -> None:
+        self.resource_root = Path(resource_root)
+        self.master_content_path = Path(master_content_path)
+        self.master_index_path = Path(master_index_path)
+        self.delete_thumbs = delete_thumbs
+
+        if not self.master_content_path.exists():
+            alt = Path("master_content.html")
+            if alt.exists():
+                self.master_content_path = alt
+
+    def _imports(self):
+        from .htmlops import (
+            extract_inner_html_only,
+            adjust_paths_for_folder,
+            strip_back_to_master,
+        )
+        from .builder import render_master_index, render_child_index
+        from .thumbs import _safe_name as _thumb_safe_name
+
+        return (
+            extract_inner_html_only,
+            adjust_paths_for_folder,
+            strip_back_to_master,
+            render_master_index,
+            render_child_index,
+            _thumb_safe_name,
+        )
+
+    def _load_master_soup(self) -> "BeautifulSoup":
+        if BeautifulSoup is None:
+            raise RuntimeError("P1-4 requires bs4. `pip install beautifulsoup4`")
+        html = read_text_safe(self.master_content_path)
+        return BeautifulSoup(html or "", "html.parser")
+
+    def _write_atomic(self, path: Path, s: str) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(str(path), s, encoding="utf-8", newline="\n")
+
+    def apply(self, report: Optional[PruneReport] = None) -> Dict[str, int]:
+        # 1) diff 준비
+        if report is None:
+            report = DiffReporter(
+                resource_root=self.resource_root,
+                master_content_path=self.master_content_path,
+                master_index_path=self.master_index_path,
+            ).make_report()
+
+        (
+            extract_inner_html_only,
+            adjust_paths_for_folder,
+            strip_back_to_master,
+            render_master_index,
+            render_child_index,
+            _thumb_safe_name,
+        ) = self._imports()
+
+        soup = self._load_master_soup()
+        removed = 0
+
+        # 2) master_content: folders_missing_in_fs 제거
+        targets = set(report.folders_missing_in_fs)
+        if targets:
+            for div in list(soup.select("div.folder")):
+                title_el = div.select_one(".folder-head h2") or div.find("h2")
+                title = (title_el.get_text(strip=True) if title_el else "").strip()
+                data_folder = (div.get("data-folder") or "").strip()
+                if title in targets or data_folder in targets:
+                    div.decompose()
+                    removed += 1
+
+        # 3) child index 재생성
+        child_built = 0
+        if report.child_indexes_missing:
+            for slug in report.child_indexes_missing:
+                div = None
+                for cand in soup.select("div.folder"):
+                    h = cand.select_one(".folder-head h2") or cand.find("h2")
+                    tt = (h.get_text(strip=True) if h else "").strip()
+                    if tt == slug or (cand.get("data-folder") or "").strip() == slug:
+                        div = cand
+                        break
+                if not div:
+                    continue
+                inner_only = extract_inner_html_only(str(div))
+                inner_for_folder = adjust_paths_for_folder(
+                    inner_only, slug, for_resource_master=False
+                )
+                safe = _thumb_safe_name(slug)
+                thumb_rel = None
+                if (self.resource_root / slug / "thumbs" / f"{safe}.jpg").exists():
+                    thumb_rel = f"thumbs/{safe}.jpg"
+                child_html = render_child_index(
+                    title=slug, html_body=inner_for_folder, thumb_src=thumb_rel
+                )
+                self._write_atomic(self.resource_root / slug / "index.html", child_html)
+                child_built += 1
+
+        # 4) master_index 재렌더 (master_content → 목록 생성)
+        folders_for_master: List[Dict[str, Optional[str]]] = []
+        for div in soup.select("div.folder"):
+            h2 = div.select_one(".folder-head h2") or div.find("h2")
+            title = (h2.get_text(strip=True) if h2 else "").strip()
+            if not title:
+                continue
+            inner_only = extract_inner_html_only(str(div))
+            inner_for_master = adjust_paths_for_folder(
+                inner_only, title, for_resource_master=True
+            )
+            inner_for_master = strip_back_to_master(inner_for_master)
+            safe = _thumb_safe_name(title)
+            thumb_rel_for_master = None
+            if (self.resource_root / title / "thumbs" / f"{safe}.jpg").exists():
+                thumb_rel_for_master = f"{title}/thumbs/{safe}.jpg"
+            folders_for_master.append(
+                {
+                    "title": title,
+                    "html": inner_for_master,
+                    "thumb": thumb_rel_for_master,
+                }
+            )
+
+        # 4-1) master_content 저장
+        self._write_atomic(self.master_content_path, str(soup))
+        # 4-2) master_index 저장
+        master_html = render_master_index(folders_for_master)
+        self._write_atomic(self.master_index_path, master_html)
+
+        # 5) 고아 썸네일 삭제(옵션)
+        thumbs_deleted = 0
+        if self.delete_thumbs and report.thumbs_orphans:
+            for p in report.thumbs_orphans:
+                try:
+                    Path(p).unlink(missing_ok=True)
+                    thumbs_deleted += 1
+                except Exception:
+                    pass
+
+        return {
+            "removed_from_master": removed,
+            "child_built": child_built,
+            "thumbs_deleted": thumbs_deleted,
+        }
+
+
 # ---- CLI ----
 
 
@@ -272,6 +446,10 @@ def _main(argv: List[str]) -> int:
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--print", action="store_true", help="print human-readable report")
     g.add_argument("--json", action="store_true", help="print JSON report")
+    ap.add_argument("--apply", action="store_true", help="apply prune changes (P1-4)")
+    ap.add_argument(
+        "--delete-thumbs", action="store_true", help="also delete orphan thumbnails"
+    )
     args = ap.parse_args(argv)
 
     reporter = DiffReporter(
@@ -279,12 +457,24 @@ def _main(argv: List[str]) -> int:
     )
     report = reporter.make_report()
 
-    if args.json:
-        print(report.to_json())
+    if args.apply:
+        applier = PruneApplier(
+            resource_root=args.resource,
+            master_content_path=MASTER_CONTENT,
+            master_index_path=ROOT_MASTER,
+            delete_thumbs=args.delete_thumbs,
+        )
+        result = applier.apply(report)
+        print("== Prune Applied ==")
+        print(f"- removed_from_master: {result['removed_from_master']}")
+        print(f"- child_built       : {result['child_built']}")
+        print(f"- thumbs_deleted    : {result['thumbs_deleted']}")
     else:
-        # default to pretty if --print or nothing provided
-        print(report.to_pretty())
-    return 0
+        if args.json:
+            print(report.to_json())
+        else:
+            # default to pretty if --print or nothing provided
+            print(report.to_pretty())
 
 
 if __name__ == "__main__":

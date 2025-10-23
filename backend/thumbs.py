@@ -5,7 +5,11 @@ import tempfile
 import re, unicodedata
 from io import BytesIO
 import os
-from fsutil import atomic_write_bytes
+
+try:
+    from .fsutil import atomic_write_bytes
+except ImportError:  # 스크립트 모드 대비
+    from fsutil import atomic_write_bytes
 
 # ANNO: Windows 배포를 전제로 exe 동봉 경로를 우선 탐색하되, PATH에도 의존 가능.
 BASE_DIR = Path(__file__).parent
@@ -13,6 +17,35 @@ BIN_DIR = BASE_DIR / "bin"
 FFMPEG_EXE = BIN_DIR / "ffmpeg.exe"
 PDFTOPPM_EXE = BIN_DIR / "poppler" / "pdftoppm.exe"  # bin/poppler
 PDFINFO_EXE = BIN_DIR / "poppler" / "pdfinfo.exe"  # 페이지 수 조회용
+
+
+def _imports(self):
+    try:
+        from .htmlops import (
+            extract_inner_html_only,
+            adjust_paths_for_folder,
+            strip_back_to_master,
+        )
+        from .builder import render_master_index, render_child_index
+        from .thumbs import _safe_name as _thumb_safe_name
+    except ImportError:
+        # 스크립트 모드 대비
+        from htmlops import (
+            extract_inner_html_only,
+            adjust_paths_for_folder,
+            strip_back_to_master,
+        )
+        from builder import render_master_index, render_child_index
+        from thumbs import _safe_name as _thumb_safe_name
+
+    return (
+        extract_inner_html_only,
+        adjust_paths_for_folder,
+        strip_back_to_master,
+        render_master_index,
+        render_child_index,
+        _thumb_safe_name,
+    )
 
 
 def _run(cmd: list[str]) -> tuple[int, str, str]:

@@ -11,7 +11,11 @@ from lockutil import SyncLock, SyncLockError
 from thumbs import make_thumbnail_for_folder
 from builder import run_sync_all, render_master_index, render_child_index
 from sanitizer import sanitize_for_publish, _safe_unescape_tag_texts_in_inner
-from pruner import DiffReporter, PruneReport
+
+try:
+    from .pruner import DiffReporter, PruneReport, PruneApplier
+except ImportError:
+    from pruner import DiffReporter, PruneReport, PruneApplier
 
 from htmlops import (
     extract_body_inner,
@@ -509,17 +513,33 @@ class MasterApi:
         드라이런 리포트를 반환한다. 실제 삭제/수정은 하지 않는다.
         """
         reporter = DiffReporter(
-            resource_root=str(self._p_resource_dir()),
-            master_content_path=str(self._p_master_file()),
-            master_index_path=str(self._p_resource_master()),
+            resource_root=self._p_resource_dir(),
+            master_content_path=self._p_master_file(),
+            master_index_path=self._p_resource_master(),
             check_thumbs=include_thumbs,
         )
         return reporter.make_report()
 
-    # (선행 인터페이스)
-    def prune_apply(self, report: Optional[PruneReport] = None) -> Dict[str, int]:
+    def prune_apply(
+        self, report: Optional[PruneReport] = None, *, delete_thumbs: bool = False
+    ) -> Dict[str, int]:
         """
-        TODO(P1-4): report 기반으로 master_content/master_index/child indexes 에서
-        삭제/정리 실제 적용. 여기서는 인터페이스만 확보.
+        PruneReport를 실제로 반영한다.
+        - master_content: folders_missing_in_fs 제거
+        - child index   : 누락분 생성
+        - master_index  : master_content 기준 재렌더
+        - thumbs        : 옵션 시 고아 파일 삭제
         """
-        raise NotImplementedError("P1-4에서 구현 예정입니다.")
+        if report is None:
+            report = DiffReporter(
+                resource_root=self._p_resource_dir(),
+                master_content_path=self._p_master_file(),
+                master_index_path=self._p_resource_master(),
+            ).make_report()
+        applier = PruneApplier(
+            resource_root=self._p_resource_dir(),
+            master_content_path=self._p_master_file(),
+            master_index_path=self._p_resource_master(),
+            delete_thumbs=delete_thumbs,
+        )
+        return applier.apply(report)

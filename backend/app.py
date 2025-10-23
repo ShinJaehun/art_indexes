@@ -1,7 +1,11 @@
 from pathlib import Path
 import sys
 import webview
-from api import MasterApi
+
+try:
+    from .api import MasterApi
+except ImportError:
+    from api import MasterApi
 
 # ANNO: 데스크톱 전용 pywebview 앱 엔트리포인트.
 # - base_dir: 개발 환경은 backend의 부모(프로젝트 루트), 배포(EXE) 환경은 실행 파일 위치.

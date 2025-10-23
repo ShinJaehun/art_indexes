@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Any, Union, List
+from typing import Dict, Any, Union, List, Optional
 import re
 import time
 import os
@@ -11,6 +11,7 @@ from lockutil import SyncLock, SyncLockError
 from thumbs import make_thumbnail_for_folder
 from builder import run_sync_all, render_master_index, render_child_index
 from sanitizer import sanitize_for_publish, _safe_unescape_tag_texts_in_inner
+from pruner import DiffReporter, PruneReport
 
 from htmlops import (
     extract_body_inner,
@@ -413,7 +414,7 @@ class MasterApi:
                 },
             }
 
-    # ---- (옵션) 리빌드 → master_content 초기화 ----
+    # ---- 리빌드 → master_content 초기화 ----
     def rebuild_master(self) -> Dict[str, Any]:
         if BeautifulSoup is None:
             return {
@@ -500,3 +501,25 @@ class MasterApi:
             f"[merge] added={len(new_blocks)} folders: {', '.join([f for f in fs_folders if f not in existing])}"
         )
         return len(new_blocks)
+
+    # --- Diff & Dry-run ---
+    def diff_and_report(self, *, include_thumbs: bool = True) -> PruneReport:
+        """
+        파일시스템 vs master_content/master_index 의 차이를 계산해
+        드라이런 리포트를 반환한다. 실제 삭제/수정은 하지 않는다.
+        """
+        reporter = DiffReporter(
+            resource_root=str(self._p_resource_dir()),
+            master_content_path=str(self._p_master_file()),
+            master_index_path=str(self._p_resource_master()),
+            check_thumbs=include_thumbs,
+        )
+        return reporter.make_report()
+
+    # (선행 인터페이스)
+    def prune_apply(self, report: Optional[PruneReport] = None) -> Dict[str, int]:
+        """
+        TODO(P1-4): report 기반으로 master_content/master_index/child indexes 에서
+        삭제/정리 실제 적용. 여기서는 인터페이스만 확보.
+        """
+        raise NotImplementedError("P1-4에서 구현 예정입니다.")

@@ -312,12 +312,13 @@ class MasterApi:
                         else f"썸네일/리소스 스캔 실패(rc={metrics['scanRc']})"
                     )
 
-                # 2) 신규 폴더를 master_content에 자동 머지
+                # 2) (옵션) 신규 폴더 자동 머지 — 기본 OFF
                 try:
-                    added = self._ensure_new_folders_in_master()
-                    if added > 0:
-                        metrics["foldersAdded"] = added
-                        print(f"[merge] added folders={added}")
+                    if os.getenv("ARTIDX_AUTO_MERGE_NEW") == "1":
+                        added = self._ensure_new_folders_in_master()
+                        if added > 0:
+                            metrics["foldersAdded"] = added
+                            print(f"[merge] added folders={added}")
                 except Exception as e:
                     errors.append(f"신규 폴더 자동 병합 실패: {e}")
                     print(f"[merge] failed: {e}")
@@ -507,7 +508,7 @@ class MasterApi:
         return len(new_blocks)
 
     # --- Diff & Dry-run ---
-    def diff_and_report(self, *, include_thumbs: bool = True) -> PruneReport:
+    def diff_and_report(self, *, include_thumbs: bool = True) -> dict:
         """
         파일시스템 vs master_content/master_index 의 차이를 계산해
         드라이런 리포트를 반환한다. 실제 삭제/수정은 하지 않는다.
@@ -518,10 +519,10 @@ class MasterApi:
             master_index_path=self._p_resource_master(),
             check_thumbs=include_thumbs,
         )
-        return reporter.make_report()
+        return reporter.make_report().to_dict()
 
     def prune_apply(
-        self, report: Optional[PruneReport] = None, *, delete_thumbs: bool = False
+        self, report: Optional[PruneReport] = None, delete_thumbs: bool = False
     ) -> Dict[str, int]:
         """
         PruneReport를 실제로 반영한다.

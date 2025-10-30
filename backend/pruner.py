@@ -297,13 +297,24 @@ class PruneApplier:
                 self.master_content_path = alt
 
     def _imports(self):
-        from .htmlops import (
-            extract_inner_html_only,
-            adjust_paths_for_folder,
-            strip_back_to_master,
-        )
-        from .builder import render_master_index, render_child_index
-        from .thumbs import _safe_name as _thumb_safe_name
+        try:
+            # 패키지 실행(backend.*)일 때
+            from .htmlops import (
+                extract_inner_html_only,
+                adjust_paths_for_folder,
+                strip_back_to_master,
+            )
+            from .builder import render_master_index, render_child_index
+            from .thumbs import _safe_name as _thumb_safe_name
+        except Exception:
+            # 스크립트 실행(top-level)일 때
+            from htmlops import (
+                extract_inner_html_only,
+                adjust_paths_for_folder,
+                strip_back_to_master,
+            )
+            from builder import render_master_index, render_child_index
+            from thumbs import _safe_name as _thumb_safe_name
 
         return (
             extract_inner_html_only,

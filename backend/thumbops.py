@@ -9,13 +9,13 @@ except Exception:
 from thumbs import _safe_name as _thumb_safe_name
 
 
-def _fs_thumb_path(resource_dir: Path, folder: str) -> Path:
-    safe = _thumb_safe_name(folder)
-    return resource_dir / folder / "thumbs" / f"{safe}.jpg"
+def _fs_thumb_path(resource_dir: Path, card_name: str) -> Path:
+    safe = _thumb_safe_name(card_name)
+    return resource_dir / card_name / "thumbs" / f"{safe}.jpg"
 
 
-def _fs_thumb_exists(resource_dir: Path, folder: str) -> bool:
-    return _fs_thumb_path(resource_dir, folder).exists()
+def _fs_thumb_exists(resource_dir: Path, card_name: str) -> bool:
+    return _fs_thumb_path(resource_dir, card_name).exists()
 
 
 def _is_within(ancestor, node) -> bool:
@@ -29,11 +29,12 @@ def _is_within(ancestor, node) -> bool:
 def _append_fs_thumb_if_missing(
     soup: "BeautifulSoup",
     tw,  # thumb-wrap 노드
-    folder: str,
+    card_name: str,
     resource_dir: Path,
 ) -> None:
     """
-    파일시스템에 썸네일이 있으면 <img.thumb src="resource/<folder>/thumbs/<safe>.jpg">를
+    파일시스템에 썸네일이 있으면
+    <img.thumb src="resource/<card_name>/thumbs/<safe>.jpg">를
     thumb-wrap(tw)에 '존재하지 않는 경우에만' 추가한다.
     """
     if tw is None:
@@ -42,8 +43,8 @@ def _append_fs_thumb_if_missing(
     if tw.find("img", class_="thumb"):
         return
 
-    safe = _thumb_safe_name(folder)
-    jpg = resource_dir / folder / "thumbs" / f"{safe}.jpg"
+    safe = _thumb_safe_name(card_name)
+    jpg = resource_dir / card_name / "thumbs" / f"{safe}.jpg"
     if not jpg.exists():
         return
 
@@ -51,25 +52,25 @@ def _append_fs_thumb_if_missing(
         "img",
         **{
             "class": "thumb",
-            "src": f"resource/{folder}/thumbs/{safe}.jpg",
+            "src": f"resource/{card_name}/thumbs/{safe}.jpg",
             "alt": "썸네일",
         },
     )
     tw.append(img)
 
 
-def _dedupe_and_confine_thumb_wrap(soup: "BeautifulSoup", folder_div) -> None:
+def _dedupe_and_confine_thumb_wrap(soup: "BeautifulSoup", card_div) -> None:
     """
-    - .folder 내부의 .thumb-wrap을 .folder-head 안으로만 제한
+    - .card 내부의 .thumb-wrap을 .card-head 안으로만 제한
     - 헤더 밖 thumb-wrap 전부 제거
     - 헤더 안 thumb-wrap 여러 개면 1개만 남김
     """
-    if folder_div is None:
+    if card_div is None:
         return
-    head = folder_div.find(class_="folder-head") or folder_div
+    head = card_div.find(class_="card-head") or card_div
 
     # 헤더 밖의 .thumb-wrap 제거
-    for tw in folder_div.find_all("div", class_="thumb-wrap"):
+    for tw in card_div.find_all("div", class_="thumb-wrap"):
         if not _is_within(head, tw):
             tw.decompose()
 
@@ -81,7 +82,7 @@ def _dedupe_and_confine_thumb_wrap(soup: "BeautifulSoup", folder_div) -> None:
             extra.decompose()
 
 
-def ensure_thumb_in_head(div_html: str, folder: str, resource_dir: Path) -> str:
+def ensure_thumb_in_head(div_html: str, card_name: str, resource_dir: Path) -> str:
     """
     - 헤더 밖 thumb-wrap 제거
     - FS 썸네일이 있거나 기존 이미지가 있을 때만 thumb-wrap 유지/생성
@@ -91,14 +92,14 @@ def ensure_thumb_in_head(div_html: str, folder: str, resource_dir: Path) -> str:
         return div_html
 
     soup = BeautifulSoup(div_html, "html.parser")
-    folder_div = soup.find("div", class_="folder") or soup
-    head = folder_div.find(class_="folder-head") or folder_div
+    card_div = soup.find("div", class_="card") or soup
+    head = card_div.find(class_="card-head") or card_div
 
     # 1) 영역 정리
-    _dedupe_and_confine_thumb_wrap(soup, folder_div)
+    _dedupe_and_confine_thumb_wrap(soup, card_div)
 
     # 2) 상태 파악
-    fs_exists = _fs_thumb_exists(resource_dir, folder)
+    fs_exists = _fs_thumb_exists(resource_dir, card_name)
     tw = head.find("div", class_="thumb-wrap")
 
     # 3) 필요할 때만 생성
@@ -108,7 +109,7 @@ def ensure_thumb_in_head(div_html: str, folder: str, resource_dir: Path) -> str:
 
     # 4) FS 보강
     if tw:
-        _append_fs_thumb_if_missing(soup, tw, folder, resource_dir)
+        _append_fs_thumb_if_missing(soup, tw, card_name, resource_dir)
         # 비어 있으면 제거
         if not tw.find("img", class_="thumb"):
             tw.decompose()
@@ -122,18 +123,18 @@ def inject_thumbs_for_preview(html: str, resource_dir: Path) -> str:
         return html
 
     soup = BeautifulSoup(html or "", "html.parser")
-    for div in soup.find_all("div", class_="folder"):
+    for div in soup.find_all("div", class_="card"):
         h2 = div.find("h2")
-        folder = (h2.get_text() or "").strip() if h2 else ""
-        if not folder:
+        card_name = (h2.get_text() or "").strip() if h2 else ""
+        if not card_name:
             continue
 
-        head = div.find(class_="folder-head") or div
+        head = div.find(class_="card-head") or div
 
         # 영역 정리
         _dedupe_and_confine_thumb_wrap(soup, div)
 
-        fs_exists = _fs_thumb_exists(resource_dir, folder)
+        fs_exists = _fs_thumb_exists(resource_dir, card_name)
         tw = head.find("div", class_="thumb-wrap")
 
         # tw가 없고 FS가 있을 때만 새로 만든다
@@ -142,7 +143,7 @@ def inject_thumbs_for_preview(html: str, resource_dir: Path) -> str:
             head.append(tw)
 
         if tw:
-            _append_fs_thumb_if_missing(soup, tw, folder, resource_dir)
+            _append_fs_thumb_if_missing(soup, tw, card_name, resource_dir)
             # 여전히 비어 있으면 제거
             if not tw.find("img", class_="thumb"):
                 tw.decompose()
@@ -156,15 +157,15 @@ def persist_thumbs_in_master(html: str, resource_dir: Path) -> str:
 
     soup = BeautifulSoup(html or "", "html.parser")
 
-    for div in soup.find_all("div", class_="folder"):
+    for div in soup.find_all("div", class_="card"):
         h2 = div.find("h2")
-        folder = (h2.get_text() or "").strip() if h2 else ""
-        if not folder:
+        card_name = (h2.get_text() or "").strip() if h2 else ""
+        if not card_name:
             continue
 
-        head = div.find(class_="folder-head")
+        head = div.find(class_="card-head")
         if not head:
-            head = soup.new_tag("div", **{"class": "folder-head"})
+            head = soup.new_tag("div", **{"class": "card-head"})
             if h2:
                 h2.replace_with(head)
                 head.append(h2)
@@ -175,7 +176,7 @@ def persist_thumbs_in_master(html: str, resource_dir: Path) -> str:
         _dedupe_and_confine_thumb_wrap(soup, div)
 
         tw = head.find("div", class_="thumb-wrap")
-        if not tw and _fs_thumb_exists(resource_dir, folder):
+        if not tw and _fs_thumb_exists(resource_dir, card_name):
             # tw가 없으면 우선 FS 여부 확인
             tw = soup.new_tag("div", **{"class": "thumb-wrap"})
             head.append(tw)
@@ -198,12 +199,12 @@ def persist_thumbs_in_master(html: str, resource_dir: Path) -> str:
 
         # 3) FS 보강
         if tw:
-            _append_fs_thumb_if_missing(soup, tw, folder, resource_dir)
+            _append_fs_thumb_if_missing(soup, tw, card_name, resource_dir)
             # dedupe: tw 내부 이미지 1장만 유지 (FS 경로 우선)
             imgs = tw.find_all("img")
             if imgs:
-                safe = _thumb_safe_name(folder)
-                fs_src = f"resource/{folder}/thumbs/{safe}.jpg"
+                safe = _thumb_safe_name(card_name)
+                fs_src = f"resource/{card_name}/thumbs/{safe}.jpg"
 
                 # 우선순위 1: class에 'thumb' 있고 src가 FS 경로인 것
                 keep = next(
@@ -249,25 +250,25 @@ def persist_thumbs_in_master(html: str, resource_dir: Path) -> str:
     return str(soup)
 
 
-def make_clean_block_html_for_master(folder: str, resource_dir: Path) -> str:
-    """초기화/신규 폴더용 '깨끗한 기본 카드' HTML 문자열 생성(툴바 없음)"""
-    safe = _thumb_safe_name(folder)
-    thumb_path = resource_dir / folder / "thumbs" / f"{safe}.jpg"
+def make_clean_block_html_for_master(card_name: str, resource_dir: Path) -> str:
+    """초기화/신규 카드용 '깨끗한 기본 카드' HTML 문자열 생성(툴바 없음)"""
+    safe = _thumb_safe_name(card_name)
+    thumb_path = resource_dir / card_name / "thumbs" / f"{safe}.jpg"
     if thumb_path.exists():
         thumb_html = f"""
       <div class="thumb-wrap">
-        <img class="thumb" src="resource/{folder}/thumbs/{safe}.jpg" alt="썸네일" />
+        <img class="thumb" src="resource/{card_name}/thumbs/{safe}.jpg" alt="썸네일" />
       </div>"""
     else:
         thumb_html = ""  # ← 빈 래퍼 생성 금지
 
     return f"""
-<div class="folder" data-folder="{folder}">
-  <div class="folder-head">
-    <h2>{folder}</h2>
+<div class="card" data-card="{card_name}">
+  <div class="card-head">
+    <h2>{card_name}</h2>
     {thumb_html}
   </div>
   <div class="inner">
-    <!-- 새 폴더 기본 본문 -->
+    <!-- 새 카드 기본 본문 -->
   </div>
 </div>""".strip()

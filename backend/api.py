@@ -10,7 +10,17 @@ from lockutil import SyncLock, SyncLockError
 
 from thumbs import make_thumbnail_for_folder
 from builder import run_sync_all, render_master_index, render_child_index
-from sanitizer import sanitize_for_publish, _safe_unescape_tag_texts_in_inner
+from sanitizer import sanitize_for_publish
+
+# 공개 API 우선 사용, 없으면 프라이빗 심볼로 폴백(하위호환)
+try:
+    from sanitizer import safe_unescape_tag_texts_in_inner as _safe_unescape_api
+except Exception:
+    try:
+        # 구버전/내부 심볼 사용 중인 환경 대응
+        from sanitizer import _safe_unescape_tag_texts_in_inner as _safe_unescape_api  # type: ignore
+    except Exception:
+        _safe_unescape_api = None  # bs4 미사용 경로 등에서 안전히 무시
 
 try:
     from .pruner import DiffReporter, PruneReport, PruneApplier
@@ -37,12 +47,18 @@ except Exception:
     BeautifulSoup = None
 
 # -------- 상수 --------
-ROOT_MASTER = "master_index.html"
+MASTER_INDEX = "master_index.html"
+MASTER_CONTENT = "master_content.html"
 
 # sanitizer 로그 토글
-SAN_VERBOSE = os.getenv("ARTIDX_SAN_VERBOSE") == "1"
+SAN_VERBOSE = os.getenv("SUKSUKIDX_SAN_VERBOSE") == "1"
 
 DEFAULT_LOCK_PATH = Path("backend/.sync.lock")
+
+# 디버깅용 강제 실패 플래그(문서화용 메모)
+# - SUKSUKIDX_FAIL_SCAN=1  → 썸네일/리소스 스캔 실패로 취급
+# - SUKSUKIDX_FAIL_PUSH=1  → push 단계 예외 강제 발생
+# 실배포에서는 사용하지 말고, 개발/테스트시에만 사용하세요.
 
 
 # -------- 메인 API --------
@@ -59,13 +75,13 @@ class MasterApi:
 
         # 외부 노출은 문자열만 (pywebview 안전)
         self._base_dir_str = str(base_dir)
-        self._master_file_str = str(base_dir / "master_content.html")
+        self._master_content_path_str = str(base_dir / MASTER_CONTENT)
         self._resource_dir_str = str(base_dir / "resource")
-        self._resource_master_str = str(Path(self._resource_dir_str) / ROOT_MASTER)
+        self._master_index_path_str = str(Path(self._resource_dir_str) / MASTER_INDEX)
 
         super().__init__() if hasattr(super(), "__init__") else None
         # ENV로 락 경로 오버라이드 허용(멀티 인스턴스/테스트 편의)
-        env_lock = os.getenv("ARTIDX_LOCK_PATH")
+        env_lock = os.getenv("SUKSUKIDX_LOCK_PATH")
         self._lock_path = (
             Path(env_lock)
             if env_lock
@@ -76,14 +92,14 @@ class MasterApi:
     def _p_base_dir(self) -> Path:
         return Path(self._base_dir_str)
 
-    def _p_master_file(self) -> Path:
-        return Path(self._master_file_str)
+    def _p_master_content(self) -> Path:
+        return Path(self._master_content_path_str)
 
     def _p_resource_dir(self) -> Path:
         return Path(self._resource_dir_str)
 
-    def _p_resource_master(self) -> Path:
-        return Path(self._resource_master_str)
+    def _p_master_index(self) -> Path:
+        return Path(self._master_index_path_str)
 
     # ---- 파일 IO ----
     def _read(self, p: Union[str, Path]) -> str:
@@ -102,18 +118,18 @@ class MasterApi:
         우선 master_content.html을 보여줌.
         없으면 resource/master_index.html의 body-inner를 추출해 초기화 + 경로접두어 보정 후 반환.
         """
-        master_file = self._p_master_file()
-        resource_master = self._p_resource_master()
+        master_content = self._p_master_content()
+        master_index = self._p_master_index()
 
-        if master_file.exists():
-            raw = self._read(master_file)
+        if master_content.exists():
+            raw = self._read(master_content)
             html_for_view = inject_thumbs_for_preview(raw, self._p_resource_dir())
             return {"html": html_for_view}
 
-        if resource_master.exists():
-            inner = extract_body_inner(self._read(resource_master))
+        if master_index.exists():
+            inner = extract_body_inner(self._read(master_index))
             inner = prefix_resource_paths_for_root(inner)
-            self._write(master_file, inner)
+            self._write(master_content, inner)
             html_for_view = inject_thumbs_for_preview(inner, self._p_resource_dir())
             return {"html": html_for_view}
 
@@ -130,7 +146,8 @@ class MasterApi:
         if BeautifulSoup is not None:
             soup = BeautifulSoup(fixed, "html.parser")
             # 엔티티로 들어온 <a> 등을 실제 노드로 변환
-            _safe_unescape_tag_texts_in_inner(soup)
+            if _safe_unescape_api is not None:
+                _safe_unescape_api(soup)
 
             # href 정규화: 스킴 없는 외부 도메인에 https:// 붙이기
             for a in soup.select(".inner a[href]"):
@@ -143,14 +160,24 @@ class MasterApi:
 
             fixed = str(soup)
 
-        self._write(self._p_master_file(), fixed)
+        self._write(self._p_master_content(), fixed)
         return {"ok": True}
 
     # ---- 푸시: master_content → resource/*.html ----
     def _push_master_to_resource(self) -> int:
-        html = self._read(self._p_master_file())
+        master_content = self._p_master_content()
+        master_index = self._p_master_index()
+        html = self._read(master_content)
         if not html:
-            print("[push] no master_content.html, skip")
+            # Case B: master_index는 있는데 master_content만 없는 경우 → 의도적 삭제로 간주, 푸시 스킵
+            if (not master_content.exists()) and master_index.exists():
+                print(
+                    "[push] skip: master_content missing while master_index exists "
+                    "(treat as intentional delete; no bootstrap)"
+                )
+            else:
+                # 일반 보호: 내용이 비거나 파일이 없으면 푸시 불가
+                print("[push] no master_content.html, skip")
             return 0
 
         if BeautifulSoup is None:
@@ -161,16 +188,16 @@ class MasterApi:
         block_count = 0
         resource_dir = self._p_resource_dir()
 
-        folders_for_master: List[Dict[str, Any]] = []
+        cards_for_master: List[Dict[str, Any]] = []
 
-        for div in soup.find_all("div", class_="folder"):
+        for div in soup.find_all("div", class_="card"):
             h2 = div.find("h2")
             if not h2:
                 continue
-            folder = h2.get_text(strip=True)
-            if not folder:
+            card_title = h2.get_text(strip=True)
+            if not card_title:
                 # 빈 제목 방어: 스킵하고 로그만 남김
-                print("[push] WARN: empty <h2> text in a .folder block; skipped")
+                print("[push] WARN: empty <h2> text in a .card block; skipped")
                 continue
             block_count += 1
 
@@ -191,10 +218,10 @@ class MasterApi:
             for k, v in san_m.items():
                 self._san_metrics[k] += v
 
-            # 폴더별 상세 로그
+            # 카드별 상세 로그
             if SAN_VERBOSE and any(san_m.values()):
                 print(
-                    f"[san] folder='{folder}' "
+                    f"[san] card='{card_title}' "
                     f"removed_nodes={san_m['removed_nodes']} "
                     f"removed_attrs={san_m['removed_attrs']} "
                     f"unwrapped_tags={san_m['unwrapped_tags']} "
@@ -202,7 +229,7 @@ class MasterApi:
                 )
 
             cleaned_div_html = ensure_thumb_in_head(
-                cleaned_div_html, folder, resource_dir
+                cleaned_div_html, card_title, resource_dir
             )
 
             # .inner '내용만' 추출
@@ -210,27 +237,27 @@ class MasterApi:
 
             # master_index용
             inner_for_master = adjust_paths_for_folder(
-                inner_only, folder, for_resource_master=True
+                inner_only, card_title, for_resource_master=True
             )
             inner_for_master = strip_back_to_master(inner_for_master)
 
             # child index용
             inner_for_folder = adjust_paths_for_folder(
-                inner_only, folder, for_resource_master=False
+                inner_only, card_title, for_resource_master=False
             )
 
             # 썸네일 경로
             from thumbs import _safe_name as _thumb_safe_name
 
-            safe = _thumb_safe_name(folder)
+            safe = _thumb_safe_name(card_title)
             thumb_rel_for_master = None
-            if (resource_dir / folder / "thumbs" / f"{safe}.jpg").exists():
-                thumb_rel_for_master = f"{folder}/thumbs/{safe}.jpg"
+            if (resource_dir / card_title / "thumbs" / f"{safe}.jpg").exists():
+                thumb_rel_for_master = f"{card_title}/thumbs/{safe}.jpg"
 
             # 마스터 렌더 입력
-            folders_for_master.append(
+            cards_for_master.append(
                 {
-                    "title": folder,
+                    "title": card_title,
                     "html": inner_for_master,
                     "thumb": thumb_rel_for_master,
                 }
@@ -238,14 +265,14 @@ class MasterApi:
 
             # child index 생성
             child_html = render_child_index(
-                title=folder,
+                title=card_title,
                 html_body=inner_for_folder,
                 thumb_src=(f"thumbs/{safe}.jpg" if thumb_rel_for_master else None),
             )
-            self._write(self._p_resource_dir() / folder / "index.html", child_html)
+            self._write(self._p_resource_dir() / card_title / "index.html", child_html)
 
-        master_html = render_master_index(folders_for_master)
-        self._write(self._p_resource_master(), master_html)
+        master_html = render_master_index(cards_for_master)
+        self._write(self._p_master_index(), master_html)
 
         print(f"[push] ok=True blocks={block_count}")
         return block_count
@@ -260,11 +287,11 @@ class MasterApi:
         """
         t0 = time.perf_counter()
         base = self._p_base_dir()
-        resource = self._p_resource_dir()
-        print(f"[sync] start base={base} resource={resource}")
+        resource_dir = self._p_resource_dir()
+        print(f"[sync] start base={base} resource={resource_dir}")
 
         # 잠금 만료시간(초): 기본 3600, 환경변수로 조절 가능
-        stale_after = int(os.getenv("ARTIDX_LOCK_STALE_AFTER", "3600"))
+        stale_after = int(os.getenv("SUKSUKIDX_LOCK_STALE_AFTER", "3600"))
 
         try:
             with SyncLock(self._lock_path, stale_after=stale_after):
@@ -300,35 +327,53 @@ class MasterApi:
                 print(f"[scan] ok={scan_ok} rc={scan_rc}")
 
                 # DEBUG: 강제 실패 주입
-                forced_scan_fail = os.getenv("ARTIDX_FAIL_SCAN") == "1"
+                forced_scan_fail = os.getenv("SUKSUKIDX_FAIL_SCAN") == "1"
                 if forced_scan_fail:
                     scan_ok = False
                     metrics["scanRc"] = -1
 
                 if not scan_ok:
                     errors.append(
-                        "DEBUG: ARTIDX_FAIL_SCAN=1로 인해 스캔을 실패로 강제 설정"
+                        "DEBUG: SUKSUKIDX_FAIL_SCAN=1로 인해 스캔을 실패로 강제 설정"
                         if forced_scan_fail
                         else f"썸네일/리소스 스캔 실패(rc={metrics['scanRc']})"
                     )
 
-                # 2) (옵션) 신규 폴더 자동 머지 — 기본 OFF
+                # 2) 콜드스타트 부트스트랩
+                # - master_content.html, master_index.html 둘 다 없으면 => 완전 초기화 상태로 보고 master_content 자동 생성
+                # - master_index만 있고 master_content는 없으면 => 의도적 삭제로 간주, 아무 것도 하지 않음(push 단계에서 skip)
                 try:
-                    if os.getenv("ARTIDX_AUTO_MERGE_NEW") == "1":
+                    mc = self._p_master_content()
+                    mi = self._p_master_index()
+                    if (not mc.exists()) and (not mi.exists()):
+                        r = self.rebuild_master()
+                        added = (r or {}).get("added", 0)
+                        print(
+                            f"[bootstrap] coldstart: created master_content.html with {added} blocks"
+                        )
+                except Exception as e:
+                    errors.append(f"부트스트랩 실패: {e}")
+                    print(f"[bootstrap] failed: {e}")
+
+                # 3) (옵션) 신규 카드 자동 머지 — 기본 OFF
+                try:
+                    if os.getenv("SUKSUKIDX_AUTO_MERGE_NEW") == "1":
                         added = self._ensure_new_folders_in_master()
                         if added > 0:
                             metrics["foldersAdded"] = added
-                            print(f"[merge] added folders={added}")
+                            print(f"[merge] added cards={added}")
                 except Exception as e:
-                    errors.append(f"신규 폴더 자동 병합 실패: {e}")
+                    errors.append(f"신규 카드 자동 병합 실패: {e}")
                     print(f"[merge] failed: {e}")
 
-                # 3) 푸시
+                # 4) 푸시
                 push_ok = True
                 block_count = 0
                 try:
-                    if os.getenv("ARTIDX_FAIL_PUSH") == "1":
-                        raise RuntimeError("DEBUG: ARTIDX_FAIL_PUSH=1 강제 푸시 예외")
+                    if os.getenv("SUKSUKIDX_FAIL_PUSH") == "1":
+                        raise RuntimeError(
+                            "DEBUG: SUKSUKIDX_FAIL_PUSH=1 강제 푸시 예외"
+                        )
 
                     block_count = self._push_master_to_resource()
                     metrics["blocksUpdated"] = block_count
@@ -356,11 +401,11 @@ class MasterApi:
                     f"sanBlockedUrls={metrics['sanBlockedUrls']}"
                 )
 
-                # 디버그 강제 실패 플래그가 켜져있다면 추가 표기
+                # 디버그 강제 실패 플래그 표기
                 dbg_flags = []
-                if os.getenv("ARTIDX_FAIL_SCAN") == "1":
+                if os.getenv("SUKSUKIDX_FAIL_SCAN") == "1":
                     dbg_flags.append("FAIL_SCAN")
-                if os.getenv("ARTIDX_FAIL_PUSH") == "1":
+                if os.getenv("SUKSUKIDX_FAIL_PUSH") == "1":
                     dbg_flags.append("FAIL_PUSH")
                 if dbg_flags:
                     print(f"[sync] debugFlags={','.join(dbg_flags)}")
@@ -437,7 +482,7 @@ class MasterApi:
             blocks.append(make_clean_block_html_for_master(p.name, resource_dir))
 
         new_html = "\n\n".join(blocks) + ("\n" if blocks else "")
-        self._write(self._p_master_file(), new_html)
+        self._write(self._p_master_content(), new_html)
         return {"ok": True, "added": len(blocks)}
 
     # ---- 썸네일 1건 ----
@@ -463,19 +508,19 @@ class MasterApi:
             return {"ok": False, "error": str(e)}
 
     def _ensure_new_folders_in_master(self) -> int:
-        """resource/<폴더> 중 master_content.html에 카드가 없는 폴더를 '깨끗한 기본 카드'로 자동 추가"""
+        """resource/<폴더> 중 master_content.html에 카드(.card)가 없는 폴더를 '깨끗한 기본 카드'로 자동 추가"""
         if BeautifulSoup is None:
-            print("[merge] bs4 missing; skip adding new folders")
+            print("[merge] bs4 missing; skip adding new cards")
             return 0
 
-        master_file = self._p_master_file()
+        master_content = self._p_master_content()
         resource_dir = self._p_resource_dir()
 
-        html = self._read(master_file)
+        html = self._read(master_content)
         soup = BeautifulSoup(html or "", "html.parser")
 
         existing: set[str] = set()
-        for div in soup.find_all("div", class_="folder"):
+        for div in soup.find_all("div", class_="card"):
             h2 = div.find("h2")
             if h2:
                 name = (h2.get_text() or "").strip()
@@ -501,9 +546,9 @@ class MasterApi:
             return 0
 
         new_html = (html or "").rstrip() + "\n\n" + "\n\n".join(new_blocks) + "\n"
-        self._write(master_file, new_html)
+        self._write(master_content, new_html)
         print(
-            f"[merge] added={len(new_blocks)} folders: {', '.join([f for f in fs_folders if f not in existing])}"
+            f"[merge] added={len(new_blocks)} cards: {', '.join([f for f in fs_folders if f not in existing])}"
         )
         return len(new_blocks)
 
@@ -515,8 +560,8 @@ class MasterApi:
         """
         reporter = DiffReporter(
             resource_root=self._p_resource_dir(),
-            master_content_path=self._p_master_file(),
-            master_index_path=self._p_resource_master(),
+            master_content_path=self._p_master_content(),
+            master_index_path=self._p_master_index(),
             check_thumbs=include_thumbs,
         )
         return reporter.make_report().to_dict()
@@ -534,13 +579,13 @@ class MasterApi:
         if report is None:
             report = DiffReporter(
                 resource_root=self._p_resource_dir(),
-                master_content_path=self._p_master_file(),
-                master_index_path=self._p_resource_master(),
+                master_content_path=self._p_master_content(),
+                master_index_path=self._p_master_index(),
             ).make_report()
         applier = PruneApplier(
             resource_root=self._p_resource_dir(),
-            master_content_path=self._p_master_file(),
-            master_index_path=self._p_resource_master(),
+            master_content_path=self._p_master_content(),
+            master_index_path=self._p_master_index(),
             delete_thumbs=delete_thumbs,
         )
         return applier.apply(report)

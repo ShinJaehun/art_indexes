@@ -1,11 +1,10 @@
 from pathlib import Path
 from bs4 import BeautifulSoup
 from typing import Dict, Any, List
-
 import os
 
 TOOLBAR_HTML = """
-<div class="folder-actions">
+<div class="card-actions">
   <button class="btn btnEditOne">편집 종료</button>
   <button class="btn btnSaveOne" disabled>저장</button>
   <button class="btn btnThumb">썸네일 갱신</button>
@@ -129,7 +128,8 @@ def scan_ssot(resource_dir: Path) -> Dict[str, Any]:
         "stats": {"count": len(folders), "thumbs": thumb_count, "errors": errors},
     }
 
-def _folder_block_html(
+
+def _card_block_html(
     title: str,
     inner_html: str,
     thumb_src: str | None = None,
@@ -146,8 +146,8 @@ def _folder_block_html(
     editable_attr = ' contenteditable="true"' if editable else ""
     editable_cls = " editable" if editable else ""
     return f"""
-<div class="folder">
-  <div class="folder-head">
+<div class="card" data-card="{title}">
+  <div class="card-head">
     <h2>{title}</h2>
     {toolbar}
     {thumb_wrap}
@@ -162,18 +162,18 @@ def _folder_block_html(
 def render_master_index(folders: list[dict]) -> str:
     """
     resource/master_index.html(캐시) 렌더
-    - 툴바/편집 속성 없음
+    - 툴바/편집 속성 없음(배포 캐시에는 편집 UI가 없어야 함)
     - master.css 링크 포함
     """
     blocks = []
     for f in folders:
         blocks.append(
-            _folder_block_html(
+            _card_block_html(
                 title=f.get("title", ""),
                 inner_html=f.get("html", ""),
                 thumb_src=f.get("thumb"),
-                include_toolbar=False,
-                editable=False,
+                include_toolbar=False,  # 배포 캐시에선 제거
+                editable=False,         # 배포 캐시에선 제거
             )
         )
 
@@ -192,12 +192,13 @@ def render_master_index(folders: list[dict]) -> str:
 </html>
 """.strip()
 
-    # 마스터 캐시에도 툴바는 없어야 함
+    # 배포 캐시에는 툴바가 없어야 하므로 전부 제거
     return dedupe_toolbar(html, mode="child")
 
 
 def render_child_index(title: str, html_body: str, thumb_src: str | None) -> str:
-    block = _folder_block_html(
+    # 배포용 child 페이지 또한 편집 UI가 없어야 하므로 include_toolbar=False
+    block = _card_block_html(
         title=title,
         inner_html=html_body,
         thumb_src=thumb_src,
@@ -225,19 +226,20 @@ def render_child_index(title: str, html_body: str, thumb_src: str | None) -> str
 </html>
 """.strip()
 
+    # 배포 캐시에는 툴바가 없어야 하므로 전부 제거
     return dedupe_toolbar(html, mode="child")
 
 
 def dedupe_toolbar(html: str, *, mode: str = "master") -> str:
     """
-    mode="master": 각 .folder마다 .folder-actions 1개만 유지
-    mode="child" : .folder-actions 전부 제거
+    mode="master": 각 .card마다 .card-actions 1개만 유지
+    mode="child" : .card-actions 전부 제거
     """
     soup = BeautifulSoup(html, "html.parser")
-    folders = soup.select(".folder")
+    folders = soup.select(".card")
 
     for folder in folders:
-        actions = folder.select(".folder-actions")
+        actions = folder.select(".card-actions")
         if not actions:
             continue
 
@@ -250,7 +252,7 @@ def dedupe_toolbar(html: str, *, mode: str = "master") -> str:
         for node in actions[1:]:
             node.decompose()
 
-        head = folder.select_one(".folder-head")
+        head = folder.select_one(".card-head")
         if head and keep.parent != head:
             keep.extract()
             head.append(keep)

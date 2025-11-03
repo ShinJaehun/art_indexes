@@ -359,11 +359,15 @@ class PruneApplier:
         # 2) master_content: folders_missing_in_fs 제거
         targets = set(report.folders_missing_in_fs)
         if targets:
-            for div in list(soup.select("div.folder")):
-                title_el = div.select_one(".folder-head h2") or div.find("h2")
+            # NOTE: .folder → .card 로 변경
+            for div in list(soup.select("div.card")):
+                # NOTE: .folder-head → .card-head 로 변경
+                title_el = div.select_one(".card-head h2") or div.find("h2")
                 title = (title_el.get_text(strip=True) if title_el else "").strip()
+                # NOTE: data-folder 뿐 아니라 data-card도 함께 고려
                 data_folder = (div.get("data-folder") or "").strip()
-                if title in targets or data_folder in targets:
+                data_card = (div.get("data-card") or "").strip()
+                if title in targets or data_folder in targets or data_card in targets:
                     div.decompose()
                     removed += 1
 
@@ -372,10 +376,15 @@ class PruneApplier:
         if report.child_indexes_missing:
             for slug in report.child_indexes_missing:
                 div = None
-                for cand in soup.select("div.folder"):
-                    h = cand.select_one(".folder-head h2") or cand.find("h2")
+                # NOTE: .folder → .card
+                for cand in soup.select("div.card"):
+                    # NOTE: .folder-head → .card-head
+                    h = cand.select_one(".card-head h2") or cand.find("h2")
                     tt = (h.get_text(strip=True) if h else "").strip()
-                    if tt == slug or (cand.get("data-folder") or "").strip() == slug:
+                    # NOTE: data-folder + data-card 모두 지원
+                    df = (cand.get("data-folder") or "").strip()
+                    dc = (cand.get("data-card") or "").strip()
+                    if tt == slug or df == slug or dc == slug:
                         div = cand
                         break
                 if not div:
@@ -396,8 +405,10 @@ class PruneApplier:
 
         # 4) master_index 재렌더 (master_content → 목록 생성)
         folders_for_master: List[Dict[str, Optional[str]]] = []
-        for div in soup.select("div.folder"):
-            h2 = div.select_one(".folder-head h2") or div.find("h2")
+        # NOTE: .folder → .card
+        for div in soup.select("div.card"):
+            # NOTE: .folder-head → .card-head
+            h2 = div.select_one(".card-head h2") or div.find("h2")
             title = (h2.get_text(strip=True) if h2 else "").strip()
             if not title:
                 continue

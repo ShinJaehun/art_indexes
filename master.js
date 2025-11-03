@@ -73,7 +73,6 @@ function autoLinkify(scopeEl) {
         if (!s) return NodeFilter.FILTER_REJECT;
 
         // ✅ 1) HTML 엔티티/태그 기호가 섞인 텍스트는 건너뜀
-        // (&lt; / &gt; / 실제 < > 가 들어있으면 사용자가 '코드'를 입력 중인 것으로 판단)
         if (/[<>]/.test(s) || /&lt;|&gt;/i.test(s)) return NodeFilter.FILTER_REJECT;
 
         // URL 패턴이 없으면 스킵
@@ -288,12 +287,12 @@ async function onBridgeReady() {
 document.addEventListener("DOMContentLoaded", async () => {
   detectBridge();
   if (!hasBridge) {
-    const blocks = $$(".folder", document);
+    const blocks = $$(".card", document);
     $("#content").innerHTML = "";
     if (blocks.length) {
       for (const b of blocks) $("#content").appendChild(b.cloneNode(true));
     } else {
-      $("#content").innerHTML = `<p class="hint">브라우저 미리보기: <code>.folder</code> 블록이 없습니다.</p>`;
+      $("#content").innerHTML = `<p class="hint">브라우저 미리보기: <code>.card</code> 블록이 없습니다.</p>`;
     }
     enhanceBlocks();
     wireGlobalToolbar();
@@ -334,12 +333,12 @@ async function loadMaster() {
       const { html } = await call("get_master");
       $("#content").innerHTML = html || "<p>내용 없음</p>";
     } else {
-      const blocks = $$(".folder", document);
+      const blocks = $$(".card", document);
       $("#content").innerHTML = "";
       if (blocks.length) {
         for (const b of blocks) $("#content").appendChild(b.cloneNode(true));
       } else {
-        $("#content").innerHTML = `<p class="hint">브라우저 미리보기: <code>.folder</code> 블록이 없습니다.</p>`;
+        $("#content").innerHTML = `<p class="hint">브라우저 미리보기: <code>.card</code> 블록이 없습니다.</p>`;
       }
     }
     enhanceBlocks();
@@ -354,18 +353,18 @@ async function loadMaster() {
 }
 
 function enhanceBlocks() {
-  $$(".folder").forEach(div => {
+  $$(".card").forEach(div => {
     if (div.__enhanced) return;
 
     // head: h2 → actions → thumb-wrap 순서 보정
     function normalizeHead(headEl) {
       const h2 = $("h2", headEl);
-      let actions = $(".folder-actions", headEl);
+      let actions = $(".card-actions", headEl);
       let thumbWrap = $(".thumb-wrap", headEl);
 
       if (!actions) {
         actions = document.createElement("div");
-        actions.className = "folder-actions" + (hasBridge ? "" : " hidden");
+        actions.className = "card-actions" + (hasBridge ? "" : " hidden");
         actions.innerHTML = `
           <button class="btn btnEditOne">편집</button>
           <button class="btn btnSaveOne" disabled>저장</button>
@@ -380,14 +379,14 @@ function enhanceBlocks() {
       return { actions, thumbWrap };
     }
 
-    // .folder-head 구성 없으면 생성
-    const hasHead = !!div.querySelector(".folder-head");
+    // .card-head 구성 없으면 생성
+    const hasHead = !!div.querySelector(".card-head");
     if (!hasHead) {
       const h2 = $("h2", div);
       if (!h2) return;
 
       const head = document.createElement("div");
-      head.className = "folder-head";
+      head.className = "card-head";
       h2.replaceWith(head);
       head.appendChild(h2);
       let { thumbWrap } = normalizeHead(head);
@@ -437,12 +436,12 @@ function enhanceBlocks() {
 
     } else {
       // 기존 thumb-wrap이 없으면 만들지 않음(후보가 있을 때만 위에서 생성)
-      const head = $(".folder-head", div);
+      const head = $(".card-head", div);
       normalizeHead(head);
     }
 
     // 제목/썸네일은 편집 제외
-    const title = $(".folder-head h2", div);
+    const title = $(".card-head h2", div);
     const thumbWrap = $(".thumb-wrap", div);
     title?.setAttribute("contenteditable", "false");
     title?.setAttribute("draggable", "false");
@@ -454,14 +453,14 @@ function enhanceBlocks() {
     });
 
     // 버튼/inner 참조
-    const actions = $(".folder-head .folder-actions", div);
+    const actions = $(".card-head .card-actions", div);
     const inner = $(".inner", div);
 
     // ✅ URL 오토링크 + 버튼화(초기 표시 시 1회)
     autoLinkify(inner);
     decorateExternalLinks(inner);
 
-    const folder = div.getAttribute("data-folder") || (title?.textContent || "").trim();
+    const folder = div.getAttribute("data-card") || (title?.textContent || "").trim();
     const btnEditOne = $(".btnEditOne", actions);
     const btnSaveOne = $(".btnSaveOne", actions);
     const btnThumb = $(".btnThumb", actions);
@@ -541,7 +540,7 @@ function enhanceBlocks() {
 
             // === 2-4) 구조 보정: 헤딩 강등 + 고아 li 래핑 + 빈 태그 정리 ===
 
-            // 본문에서는 h1/h2를 h3로 강등 (제목 <h2>는 folder-head 쪽이 담당하므로)
+            // 본문에서는 h1/h2를 h3로 강등 (제목 <h2>는 card-head 쪽이 담당)
             (function demoteHeadings(root) {
               root.querySelectorAll("h1,h2").forEach(h => {
                 const h3 = document.createElement("h3");
@@ -624,7 +623,7 @@ function enhanceBlocks() {
       btnSaveOne.disabled = true;
       try {
         // ✅ 저장 직전 전체 카드에 대해 오토링크/버튼화 보정
-        $$(".folder .inner").forEach(el => { autoLinkify(el); decorateExternalLinks(el); });
+        $$(".card .inner").forEach(el => { autoLinkify(el); decorateExternalLinks(el); });
 
         await call("save_master", serializeMaster());
         await loadMaster(); // 저장된 내용으로 즉시 재로딩(렌더 상태 확인)
@@ -668,8 +667,8 @@ function enhanceBlocks() {
 function serializeMaster() {
   const root = document.querySelector("#content").cloneNode(true);
 
-  root.querySelectorAll(".folder").forEach(div => {
-    const head = div.querySelector(".folder-head");
+  root.querySelectorAll(".card").forEach(div => {
+    const head = div.querySelector(".card-head");
     const inner = div.querySelector(".inner");
     if (!head || !inner) return;
 
@@ -677,7 +676,7 @@ function serializeMaster() {
     const thumbWrapEl = div.querySelector(".thumb-wrap");
 
     const clean = document.createElement("div");
-    clean.className = "folder";
+    clean.className = "card";
 
     // h2 (편집 제외)
     const h2 = document.createElement("h2");
@@ -707,7 +706,7 @@ function serializeMaster() {
   });
 
   // 버튼/툴바 제거, 잔여 편집 속성 제거
-  root.querySelectorAll(".folder-actions, button.btn").forEach(el => el.remove());
+  root.querySelectorAll(".card-actions, button.btn").forEach(el => el.remove());
   root.querySelectorAll("[contenteditable]").forEach(el => el.removeAttribute("contenteditable"));
 
   return root.innerHTML;
@@ -777,7 +776,7 @@ function wireGlobalToolbar() {
       if (!hasBridge) return alert("데스크톱 앱에서 실행하세요.");
       btnRegenAll.disabled = true;
       try {
-        const names = $$(".folder").map(div => div.getAttribute("data-folder") || $("h2", div)?.textContent.trim());
+        const names = $$(".card").map(div => div.getAttribute("data-card") || $("h2", div)?.textContent.trim());
         for (const name of names) {
           await call("refresh_thumb", name, 640);
         }
@@ -799,7 +798,7 @@ function wireGlobalToolbar() {
     btnEditAll.addEventListener("click", () => {
       if (!hasBridge) return alert("편집은 데스크톱 앱에서만 가능합니다.");
       // 모든 카드의 .inner 편집 시작
-      $$(".folder .inner").forEach(inner => {
+      $$(".card .inner").forEach(inner => {
         inner.contentEditable = "true";
         inner.classList.add("editable");
       });
@@ -812,13 +811,13 @@ function wireGlobalToolbar() {
       btnSaveAll.disabled = true;
       try {
         // ✅ 저장 직전 보정
-        $$(".folder .inner").forEach(el => { autoLinkify(el); decorateExternalLinks(el); });
+        $$(".card .inner").forEach(el => { autoLinkify(el); decorateExternalLinks(el); });
 
         await call("save_master", serializeMaster());
         await loadMaster(); // 저장된 내용으로 즉시 재로딩(렌더 상태 확인)
         showStatus({ level: "ok", title: "전체 저장 완료", autoHideMs: 2000 });
         // 편집 종료
-        $$(".folder .inner").forEach(inner => {
+        $$(".card .inner").forEach(inner => {
           inner.contentEditable = "false";
           inner.classList.remove("editable");
         });

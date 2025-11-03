@@ -127,8 +127,8 @@ def sanitize_for_publish(
     div_html: str, *, return_metrics: bool = False
 ) -> Union[str, Tuple[str, Dict[str, int]]]:
     """
-    편집용 div.folder → 배포용 정화
-    - 제거: .folder-actions, .btn*, DangerTags
+    편집용 div.card → 배포용 정화
+    - 제거: .card-actions, .btn*, DangerTags
     - 속성: on*, data-*, style, contenteditable, draggable 제거
     - 태그: 화이트리스트 외는 unwrap
     - URL: javascript:, data: 차단(속성 제거)
@@ -148,8 +148,8 @@ def sanitize_for_publish(
     # _safe_unescape_tag_texts_in_inner(soup) # <- 저장 시점에서만 복원되므로 publish 단계에서는 복원 시도 안함
 
     # 1) 컨트롤 UI 제거
-    # - 폴더 액션 바 전체 제거
-    for n in soup.select(".folder-actions"):
+    # - 카드 액션 바 전체 제거
+    for n in soup.select(".card-actions"):
         n.decompose()
         metrics["removed_nodes"] += 1
 

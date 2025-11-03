@@ -18,7 +18,7 @@ _SKIP_PREFIX = re.compile(
 )
 
 __all__ = [
-    "extract_folder_blocks",
+    "extract_folder_blocks",  # (호환 이름 유지)
     "map_blocks_by_slug",
 ]
 
@@ -55,7 +55,7 @@ def _inner_html(el) -> str:
 
 def extract_folder_blocks(html: str) -> List[Dict[str, Any]]:
     """
-    마스터/차일드 HTML에서 <div class="folder"> 블록들을 표준 스키마로 파싱.
+    (호환 함수명) 마스터/차일드 HTML에서 <div class="card"> 블록들을 표준 스키마로 파싱.
     반환 스키마:
       [{"slug","title","thumb","html","raw_html"}, ...]
     """
@@ -67,13 +67,13 @@ def extract_folder_blocks(html: str) -> List[Dict[str, Any]]:
     soup = BeautifulSoup(html or "", "html.parser")
     out: List[Dict[str, Any]] = []
 
-    for folder in soup.select("div.folder"):
+    for folder in soup.select("div.card"):
         # 1) 제목
-        h2 = folder.select_one(".folder-head h2") or folder.find("h2")
+        h2 = folder.select_one(".card-head h2") or folder.find("h2")
         title = _text(h2) if h2 else ""
 
         # 2) 썸네일
-        thumb_img = folder.select_one(".folder-head img.thumb") or folder.select_one(
+        thumb_img = folder.select_one(".card-head img.thumb") or folder.select_one(
             "img.thumb"
         )
         thumb: Optional[str] = (
@@ -85,7 +85,7 @@ def extract_folder_blocks(html: str) -> List[Dict[str, Any]]:
         inner_html = _inner_html(inner) if inner else ""
 
         # 4) slug + raw
-        slug = _make_slug(title if title else "folder")
+        slug = _make_slug(title if title else "card")
         raw_html = str(folder)
 
         out.append(
@@ -110,7 +110,7 @@ def map_blocks_by_slug(blocks: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]
     counter: Dict[str, int] = {}
 
     for b in blocks:
-        slug = b.get("slug") or "folder"
+        slug = b.get("slug") or "card"
         if slug in bucket:
             # disambiguate
             counter[slug] = counter.get(slug, 1) + 1
@@ -326,7 +326,7 @@ def adjust_paths_for_folder(
 
 def extract_inner_html_only(div_folder_html: str) -> str:
     """
-    <div class="folder">에서 .inner의 '자식'만 HTML 그대로 반환
+    <div class="card">에서 .inner의 '자식'만 HTML 그대로 반환
     (헤드/툴바/썸네일 배제, 엔티티 재이스케이프 금지)
     """
     if BeautifulSoup is None:
@@ -338,7 +338,7 @@ def extract_inner_html_only(div_folder_html: str) -> str:
         return inner.strip()
 
     soup = BeautifulSoup(div_folder_html, "html.parser")
-    folder = soup.find("div", class_="folder") or soup
+    folder = soup.find("div", class_="card") or soup
     inner = folder.find("div", class_="inner")
     if not inner:
         return ""

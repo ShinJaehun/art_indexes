@@ -25,7 +25,11 @@ def run_sync_all(resource_dir: Path, thumb_width: int = 640, *, scan_only: bool 
     if scan_only:
         return scan_ssot(resource_dir)
     try:
-        from thumbs import scan_and_make_thumbs
+        # 패키지 실행/스크립트 실행 모두 지원
+        try:
+            from .thumbs import scan_and_make_thumbs
+        except Exception:
+            from thumbs import scan_and_make_thumbs
         ok = scan_and_make_thumbs(resource_dir, refresh=True, width=thumb_width)
         return 0 if ok else 1
     except Exception as e:
@@ -183,7 +187,7 @@ def render_master_index(folders: list[dict]) -> str:
 <head>
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Art Index — Master</title>
+  <title>SukSuk Index — Master</title>
   <link rel="stylesheet" href="master.css"/>
 </head>
 <body>

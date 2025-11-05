@@ -6,7 +6,10 @@ try:
 except Exception:
     BeautifulSoup = None
 
-from thumbs import _safe_name as _thumb_safe_name
+try:
+    from .thumbs import _safe_name as _thumb_safe_name
+except Exception:
+    from thumbs import _safe_name as _thumb_safe_name
 
 
 def _fs_thumb_path(resource_dir: Path, card_name: str) -> Path:

@@ -5,41 +5,83 @@ import time
 import os
 import traceback
 
-from fsutil import atomic_write_text
-from lockutil import SyncLock, SyncLockError
+try:
+    from .fsutil import atomic_write_text
+except Exception:
+    from fsutil import atomic_write_text
 
-from thumbs import make_thumbnail_for_folder
-from builder import run_sync_all, render_master_index, render_child_index
-from sanitizer import sanitize_for_publish
+try:
+    from .lockutil import SyncLock, SyncLockError
+except Exception:
+    from lockutil import SyncLock, SyncLockError
+
+try:
+    from .thumbs import make_thumbnail_for_folder
+except Exception:
+    from thumbs import make_thumbnail_for_folder
+
+try:
+    from .builder import run_sync_all, render_master_index, render_child_index
+except Exception:
+    from builder import run_sync_all, render_master_index, render_child_index
+
+try:
+    from .sanitizer import sanitize_for_publish
+except Exception:
+    from sanitizer import sanitize_for_publish
+
 
 # 공개 API 우선 사용, 없으면 프라이빗 심볼로 폴백(하위호환)
 try:
-    from sanitizer import safe_unescape_tag_texts_in_inner as _safe_unescape_api
+    from .sanitizer import safe_unescape_tag_texts_in_inner as _safe_unescape_api
 except Exception:
     try:
-        # 구버전/내부 심볼 사용 중인 환경 대응
-        from sanitizer import _safe_unescape_tag_texts_in_inner as _safe_unescape_api  # type: ignore
+        from .sanitizer import _safe_unescape_tag_texts_in_inner as _safe_unescape_api  # type: ignore
     except Exception:
-        _safe_unescape_api = None  # bs4 미사용 경로 등에서 안전히 무시
+        try:
+            from sanitizer import safe_unescape_tag_texts_in_inner as _safe_unescape_api
+        except Exception:
+            try:
+                from sanitizer import _safe_unescape_tag_texts_in_inner as _safe_unescape_api  # type: ignore
+            except Exception:
+                _safe_unescape_api = None  # bs4 미사용
 
 try:
     from .pruner import DiffReporter, PruneReport, PruneApplier
 except ImportError:
     from pruner import DiffReporter, PruneReport, PruneApplier
 
-from htmlops import (
-    extract_body_inner,
-    prefix_resource_paths_for_root,
-    strip_back_to_master,
-    adjust_paths_for_folder,
-    extract_inner_html_only,
-)
-from thumbops import (
-    ensure_thumb_in_head,
-    inject_thumbs_for_preview,
-    persist_thumbs_in_master,
-    make_clean_block_html_for_master,
-)
+try:
+    from .htmlops import (
+        extract_body_inner,
+        prefix_resource_paths_for_root,
+        strip_back_to_master,
+        adjust_paths_for_folder,
+        extract_inner_html_only,
+    )
+except Exception:
+    from htmlops import (
+        extract_body_inner,
+        prefix_resource_paths_for_root,
+        strip_back_to_master,
+        adjust_paths_for_folder,
+        extract_inner_html_only,
+    )
+
+try:
+    from .thumbops import (
+        ensure_thumb_in_head,
+        inject_thumbs_for_preview,
+        persist_thumbs_in_master,
+        make_clean_block_html_for_master,
+    )
+except Exception:
+    from thumbops import (
+        ensure_thumb_in_head,
+        inject_thumbs_for_preview,
+        persist_thumbs_in_master,
+        make_clean_block_html_for_master,
+    )
 
 try:
     from bs4 import BeautifulSoup
@@ -247,7 +289,10 @@ class MasterApi:
             )
 
             # 썸네일 경로
-            from thumbs import _safe_name as _thumb_safe_name
+            try:
+                from .thumbs import _safe_name as _thumb_safe_name
+            except Exception:
+                from thumbs import _safe_name as _thumb_safe_name
 
             safe = _thumb_safe_name(card_title)
             thumb_rel_for_master = None

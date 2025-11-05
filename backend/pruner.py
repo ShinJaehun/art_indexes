@@ -141,28 +141,72 @@ def list_master_index_slugs(path: str | Path = ROOT_MASTER) -> Set[str]:
 
 # ---- 썸네일 고아 검출(옵션) ----
 
+_RE_THUMBS_FILE_IN_CHILD = re.compile(r'src=["\']thumbs/([^"\']+\.jpe?g)["\']', re.I)
 
-def find_orphan_thumbs(resource_root: str | Path, fs_slugs: Set[str]) -> List[str]:
+
+def _extract_thumb_filenames_from_child(child_html: str) -> Set[str]:
+    # child index: src="thumbs/<file>.jpg"
+    return set(_RE_THUMBS_FILE_IN_CHILD.findall(child_html or ""))
+
+
+def _extract_thumb_filenames_from_master_index(mi_html: str, slug: str) -> Set[str]:
+    # master_index: src="<slug>/thumbs/<file>.jpg"
+    pat = re.compile(
+        r'src=["\']' + re.escape(slug) + r'/thumbs/([^"\']+\.jpe?g)["\']', re.I
+    )
+    return set(pat.findall(mi_html or ""))
+
+
+def _extract_thumb_filenames_from_master_content(mc_html: str, slug: str) -> Set[str]:
+    # master_content: src="resource/<slug>/thumbs/<file>.jpg"
+    pat = re.compile(
+        r'src=["\']resource/' + re.escape(slug) + r'/thumbs/([^"\']+\.jpe?g)["\']', re.I
+    )
+    # 혹시 다른 형태도 있을 수 있어 느슨하게 하나 더 허용(예방적)
+    pat2 = re.compile(
+        r'src=["\'](?:\./)?' + re.escape(slug) + r'/thumbs/([^"\']+\.jpe?g)["\']', re.I
+    )
+    return set(pat.findall(mc_html or "")) | set(pat2.findall(mc_html or ""))
+
+
+def find_orphan_thumbs(
+    resource_root: str | Path,
+    fs_slugs: Set[str],
+    master_index_path: str | Path,
+    master_content_path: str | Path,
+) -> List[str]:
     """
-    간단 규칙:
-    - resource/<slug>/thumbs/* 가 실제 존재하고, slug 가 fs_slugs 에 없으면 orphan 후보
-    - 리포트는 경로 문자열 리스트로 반환(적용 단계에서 삭제 결정)
+    새로운 규칙:
+      - 각 slug에 대해 resource/<slug>/thumbs/*.jpg '파일집합'에서
+        master_index / master_content / child index들이 '참조하는 파일명 집합'을 제외한 나머지를 고아로 간주.
+      - 리턴은 풀경로 문자열 리스트.
     """
     root = Path(resource_root)
-    orphans: List[str] = []
-    for slug in fs_slugs:
-        # 존재하는 폴더는 고아가 아님
-        pass
-    # 폴더 전체를 확인하여, fs_slugs 에 없는데 thumbs 가 남아 있는 경우 수집
-    for p in root.iterdir():
-        if not p.is_dir() or _HIDDEN_DIR.match(p.name):
+    mi_html = read_text_safe(Path(master_index_path))
+    mc_html = read_text_safe(Path(master_content_path))
+    out: List[str] = []
+
+    for slug in sorted(fs_slugs):
+        thumbs_dir = root / slug / "thumbs"
+        if not thumbs_dir.exists():
             continue
-        if p.name not in fs_slugs:
-            thumbs = p / "thumbs"
-            if thumbs.exists() and thumbs.is_dir():
-                for f in thumbs.glob("*"):
-                    orphans.append(str(f))
-    return orphans
+        # 파일 집합(파일명만)
+        files = {p.name for p in thumbs_dir.glob("*.jpg")}
+        if not files:
+            continue
+        # 참조 집합
+        refs: Set[str] = set()
+        # child index
+        child_html = read_text_safe(root / slug / "index.html")
+        refs |= _extract_thumb_filenames_from_child(child_html)
+        # master_index
+        refs |= _extract_thumb_filenames_from_master_index(mi_html, slug)
+        # master_content
+        refs |= _extract_thumb_filenames_from_master_content(mc_html, slug)
+        # 고아 = 파일 - 참조
+        for fname in sorted(files - refs):
+            out.append(str(thumbs_dir / fname))
+    return out
 
 
 # ---- 드라이런 리포트 모델 ----
@@ -246,7 +290,12 @@ class DiffReporter:
         # thumbs 고아(옵션)
         thumbs_orphans: List[str] = []
         if self.check_thumbs:
-            thumbs_orphans = find_orphan_thumbs(self.resource_root, fs_slugs)
+            thumbs_orphans = find_orphan_thumbs(
+                self.resource_root,
+                fs_slugs,
+                self.master_index_path,
+                self.master_content_path,
+            )
 
         summary = {
             "fs_slugs": len(fs_slugs),

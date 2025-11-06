@@ -91,6 +91,7 @@ except Exception:
 # -------- 상수 --------
 MASTER_INDEX = "master_index.html"
 MASTER_CONTENT = "master_content.html"
+BACKEND_DIR = "backend"
 
 # sanitizer 로그 토글
 SAN_VERBOSE = os.getenv("SUKSUKIDX_SAN_VERBOSE") == "1"
@@ -117,18 +118,15 @@ class MasterApi:
 
         # 외부 노출은 문자열만 (pywebview 안전)
         self._base_dir_str = str(base_dir)
-        self._master_content_path_str = str(base_dir / MASTER_CONTENT)
+        self._master_content_path_str = str(base_dir / BACKEND_DIR / MASTER_CONTENT)
         self._resource_dir_str = str(base_dir / "resource")
         self._master_index_path_str = str(Path(self._resource_dir_str) / MASTER_INDEX)
 
         super().__init__() if hasattr(super(), "__init__") else None
         # ENV로 락 경로 오버라이드 허용(멀티 인스턴스/테스트 편의)
         env_lock = os.getenv("SUKSUKIDX_LOCK_PATH")
-        self._lock_path = (
-            Path(env_lock)
-            if env_lock
-            else getattr(self, "_lock_path", DEFAULT_LOCK_PATH)
-        )
+        default_lock = base_dir / BACKEND_DIR / ".sync.lock"
+        self._lock_path = Path(env_lock) if env_lock else default_lock
 
     # ---- 내부 Path 헬퍼 ----
     def _p_base_dir(self) -> Path:
@@ -154,6 +152,34 @@ class MasterApi:
         p.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_text(str(p), s, encoding="utf-8", newline="\n")
 
+    def _prefix_resource_for_ui(self, html: str) -> str:
+        """backend/ui/index.html에서 주입해 렌더링할 때만 resource/ 경로에 ../../ 프리픽스"""
+        try:
+            from bs4 import BeautifulSoup
+        except Exception:
+            BeautifulSoup = None
+
+        if not html:
+            return html
+        if BeautifulSoup is None:
+            # 최소 안전망: 단순 치환(속성값 내에서만)
+            return (
+                html.replace('src="resource/', 'src="../../resource/')
+                .replace("src='resource/", "src='../../resource/")
+                .replace('href="resource/', 'href="../../resource/')
+                .replace("href='resource/", "href='../../resource/")
+            )
+
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup.find_all(True):
+            for attr in ("src", "href"):
+                v = tag.get(attr)
+                if not v or not isinstance(v, str):
+                    continue
+                if v.startswith("resource/"):
+                    tag[attr] = f"../../{v}"
+        return str(soup)
+
     # ---- 로드 / 저장 ----
     def get_master(self) -> Dict[str, Any]:
         """
@@ -166,6 +192,8 @@ class MasterApi:
         if master_content.exists():
             raw = self._read(master_content)
             html_for_view = inject_thumbs_for_preview(raw, self._p_resource_dir())
+            # ⬇️ UI 컨텍스트 경로 보정
+            html_for_view = self._prefix_resource_for_ui(html_for_view)
             return {"html": html_for_view}
 
         if master_index.exists():
@@ -173,6 +201,8 @@ class MasterApi:
             inner = prefix_resource_paths_for_root(inner)
             self._write(master_content, inner)
             html_for_view = inject_thumbs_for_preview(inner, self._p_resource_dir())
+            # ⬇️ UI 컨텍스트 경로 보정
+            html_for_view = self._prefix_resource_for_ui(html_for_view)
             return {"html": html_for_view}
 
         return {"html": ""}

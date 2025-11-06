@@ -21,9 +21,20 @@ except Exception:
     from thumbs import make_thumbnail_for_folder
 
 try:
-    from .builder import run_sync_all, render_master_index, render_child_index
+    # ensure_css_assets 포함하여 가져옴
+    from .builder import (
+        run_sync_all,
+        render_master_index,
+        render_child_index,
+        ensure_css_assets,
+    )
 except Exception:
-    from builder import run_sync_all, render_master_index, render_child_index
+    from builder import (
+        run_sync_all,
+        render_master_index,
+        render_child_index,
+        ensure_css_assets,
+    )
 
 try:
     from .sanitizer import sanitize_for_publish
@@ -192,7 +203,7 @@ class MasterApi:
         if master_content.exists():
             raw = self._read(master_content)
             html_for_view = inject_thumbs_for_preview(raw, self._p_resource_dir())
-            # ⬇️ UI 컨텍스트 경로 보정
+            # UI 컨텍스트 경로 보정
             html_for_view = self._prefix_resource_for_ui(html_for_view)
             return {"html": html_for_view}
 
@@ -201,7 +212,7 @@ class MasterApi:
             inner = prefix_resource_paths_for_root(inner)
             self._write(master_content, inner)
             html_for_view = inject_thumbs_for_preview(inner, self._p_resource_dir())
-            # ⬇️ UI 컨텍스트 경로 보정
+            # UI 컨텍스트 경로 보정
             html_for_view = self._prefix_resource_for_ui(html_for_view)
             return {"html": html_for_view}
 
@@ -338,18 +349,71 @@ class MasterApi:
                 }
             )
 
-            # child index 생성
+            # child index는 push 마지막에 css_basename 결정 후 렌더
             child_html = render_child_index(
                 title=card_title,
                 html_body=inner_for_folder,
                 thumb_src=(f"thumbs/{safe}.jpg" if thumb_rel_for_master else None),
+                css_basename="__DEFER__",  # 임시 값(아래에서 실제 해시로 다시 쓰기)
             )
-            self._write(self._p_resource_dir() / card_title / "index.html", child_html)
+            # 임시 저장은 건너뛰고, 아래에서 최종 CSS 이름으로 다시 렌더링하여 기록할 것
+            # (성능상 크게 차이 없으므로 다시 렌더하는 편이 단순함)
 
-        master_html = render_master_index(cards_for_master)
+        # CSS 자산 보장 + 파일명 획득
+        css_basename = ensure_css_assets(resource_dir)  # e.g., master.<HASH>.css
+
+        # child index 실제 작성
+        # child_html을 다시 만들어야 하므로 위에서 축적 대신 바로 여기서 생성/쓰기
+        for card in cards_for_master:
+            title = card["title"]
+            inner_for_folder = adjust_paths_for_folder(
+                card["html"], title, for_resource_master=False
+            )
+            # 위 줄은 master용 html이라 다시 adjust하면 2중 보정될 수 있음 → 안전하게 다시 추출 경로:
+            # 간단화를 위해 child는 처음 계산했던 inner_for_folder를 재사용하는 구조가 가장 좋지만
+            # 여기서는 무손실을 위해 원본 soup에서 재추출하는 편이 정석. 다만 성능/간결성상 아래 처리로 충분.
+            # (문제되면 builder 쪽 사양을 조정해 cards_for_master에 child_html도 같이 담도록 변경 가능)
+
+        # master/child 모두 최종 렌더 후 파일 기록
+        # master
+        master_html = render_master_index(cards_for_master, css_basename=css_basename)
         self._write(self._p_master_index(), master_html)
 
-        print(f"[push] ok=True blocks={block_count}")
+        # child
+        for div in soup.find_all("div", class_="card"):
+            h2 = div.find("h2")
+            if not h2:
+                continue
+            title = h2.get_text(strip=True)
+            if not title:
+                continue
+
+            cleaned_div_html, _ = sanitize_for_publish(str(div), return_metrics=True)
+            inner_only = extract_inner_html_only(cleaned_div_html)
+            inner_for_folder = adjust_paths_for_folder(
+                inner_only, title, for_resource_master=False
+            )
+
+            # 썸네일 다시 계산
+            try:
+                from .thumbs import _safe_name as _thumb_safe_name
+            except Exception:
+                from thumbs import _safe_name as _thumb_safe_name
+            safe = _thumb_safe_name(title)
+            thumb_rel_for_master = (
+                resource_dir / title / "thumbs" / f"{safe}.jpg"
+            ).exists()
+            thumb_src = f"thumbs/{safe}.jpg" if thumb_rel_for_master else None
+
+            child_html = render_child_index(
+                title=title,
+                html_body=inner_for_folder,
+                thumb_src=thumb_src,
+                css_basename=css_basename,
+            )
+            self._write(self._p_resource_dir() / title / "index.html", child_html)
+
+        print(f"[push] ok=True blocks={block_count} css={css_basename}")
         return block_count
 
     # ---- 동기화 ----

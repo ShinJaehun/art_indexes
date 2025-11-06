@@ -1,7 +1,9 @@
 from pathlib import Path
 from bs4 import BeautifulSoup
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import os
+import hashlib
+import shutil
 
 TOOLBAR_HTML = """
 <div class="card-actions">
@@ -133,6 +135,82 @@ def scan_ssot(resource_dir: Path) -> Dict[str, Any]:
     }
 
 
+# ---------- CSS 해시 배포 ----------
+def _read_publish_css(resource_dir: Path) -> Optional[bytes]:
+    """backend/ui/publish.css 를 최우선으로 읽고, 없으면 None 반환"""
+    base = resource_dir.parent  # 프로젝트 루트
+    p = base / "backend" / "ui" / "publish.css"
+    if p.exists():
+        return p.read_bytes()
+    return None
+
+
+def _sha1_12(b: bytes) -> str:
+    return hashlib.sha1(b).hexdigest()[:12]
+
+
+def _write_if_changed(target: Path, data: bytes) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        try:
+            if target.read_bytes() == data:
+                return
+        except Exception:
+            pass
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_bytes(data)
+    tmp.replace(target)
+
+
+def _cleanup_old_css(dirpath: Path, keep_name: str) -> int:
+    """dirpath 내 master.*.css 중 keep_name 이외 삭제"""
+    removed = 0
+    if not dirpath.exists():
+        return removed
+    for p in dirpath.glob("master.*.css"):
+        if p.name != keep_name:
+            try:
+                p.unlink()
+                removed += 1
+            except Exception:
+                pass
+    return removed
+
+
+def ensure_css_assets(resource_dir: Path) -> str:
+    """
+    publish.css 를 읽어 해시 파일로 배포하고, 사용해야 할 CSS 파일명을 반환.
+    - 루트: resource/master.<HASH>.css
+    - 각 폴더: resource/<folder>/master.<HASH>.css
+    - publish.css 가 없으면 "master.css" 로 폴백(이전 방식 유지)
+    """
+    css = _read_publish_css(resource_dir)
+    if css is None:
+        # 안전 폴백: 기존 master.css 체계 유지
+        print("[css] publish.css not found; fallback to master.css")
+        return "master.css"
+
+    h = _sha1_12(css)
+    basename = f"master.{h}.css"
+
+    # 루트 배포
+    root_target = resource_dir / basename
+    _write_if_changed(root_target, css)
+    _cleanup_old_css(resource_dir, basename)
+
+    # 각 폴더 배포
+    for d in sorted(p for p in resource_dir.iterdir() if p.is_dir() and not p.name.startswith(".")):
+        if d.name.lower() == "thumbs":
+            continue
+        target = d / basename
+        _write_if_changed(target, css)
+        _cleanup_old_css(d, basename)
+
+    print(f"[css] deployed {basename} to root and folders")
+    return basename
+# ----------------------------------------
+
+
 def _card_block_html(
     title: str,
     inner_html: str,
@@ -163,11 +241,11 @@ def _card_block_html(
 """.strip()
 
 
-def render_master_index(folders: list[dict]) -> str:
+def render_master_index(folders: list[dict], *, css_basename: str = "master.css") -> str:
     """
     resource/master_index.html(캐시) 렌더
     - 툴바/편집 속성 없음(배포 캐시에는 편집 UI가 없어야 함)
-    - master.css 링크 포함
+    - CSS 링크는 css_basename 사용 (예: master.<HASH>.css)
     """
     blocks = []
     for f in folders:
@@ -188,7 +266,7 @@ def render_master_index(folders: list[dict]) -> str:
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>SukSuk Index — Master</title>
-  <link rel="stylesheet" href="master.css"/>
+  <link rel="stylesheet" href="{css_basename}"/>
 </head>
 <body>
   {'\n'.join(blocks)}
@@ -200,7 +278,7 @@ def render_master_index(folders: list[dict]) -> str:
     return dedupe_toolbar(html, mode="child")
 
 
-def render_child_index(title: str, html_body: str, thumb_src: str | None) -> str:
+def render_child_index(title: str, html_body: str, thumb_src: str | None, *, css_basename: str = "master.css") -> str:
     # 배포용 child 페이지 또한 편집 UI가 없어야 하므로 include_toolbar=False
     block = _card_block_html(
         title=title,
@@ -221,7 +299,7 @@ def render_child_index(title: str, html_body: str, thumb_src: str | None) -> str
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>{title}</title>
-  <link rel="stylesheet" href="../master.css"/>
+  <link rel="stylesheet" href="{css_basename if css_basename.startswith('http') or css_basename.startswith('/') else '../' + css_basename}"/>
 </head>
 <body>
   {block}

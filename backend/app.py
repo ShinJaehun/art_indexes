@@ -8,6 +8,12 @@ try:
 except ImportError:
     from api import MasterApi
 
+try:
+    from .constants import BACKEND_DIR, RESOURCE_DIR
+except Exception:
+    BACKEND_DIR = "backend"
+    RESOURCE_DIR = "resource"
+
 
 def _resolve_base_dir() -> Path:
     if getattr(sys, "frozen", False):
@@ -17,7 +23,7 @@ def _resolve_base_dir() -> Path:
 
 def _resolve_index_path(base_dir: Path) -> Optional[Path]:
     candidates = [
-        base_dir / "backend" / "ui" / "index.html",  # ✅ P2 권장 경로
+        base_dir / BACKEND_DIR / "ui" / "index.html",
         base_dir / "index.html",  # (구버전 폴백)
     ]
     for p in candidates:

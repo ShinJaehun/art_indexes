@@ -100,14 +100,25 @@ except Exception:
     BeautifulSoup = None
 
 # -------- 상수 --------
-MASTER_INDEX = "master_index.html"
-MASTER_CONTENT = "master_content.html"
-BACKEND_DIR = "backend"
+try:
+    from .constants import (
+        MASTER_INDEX,
+        MASTER_CONTENT,
+        BACKEND_DIR,
+        RESOURCE_DIR,
+        DEFAULT_LOCK_PATH,
+    )
+except Exception:
+    from constants import (
+        MASTER_INDEX,
+        MASTER_CONTENT,
+        BACKEND_DIR,
+        RESOURCE_DIR,
+        DEFAULT_LOCK_PATH,
+    )
 
 # sanitizer 로그 토글
 SAN_VERBOSE = os.getenv("SUKSUKIDX_SAN_VERBOSE") == "1"
-
-DEFAULT_LOCK_PATH = Path("backend/.sync.lock")
 
 # 디버깅용 강제 실패 플래그(문서화용 메모)
 # - SUKSUKIDX_FAIL_SCAN=1  → 썸네일/리소스 스캔 실패로 취급
@@ -130,13 +141,13 @@ class MasterApi:
         # 외부 노출은 문자열만 (pywebview 안전)
         self._base_dir_str = str(base_dir)
         self._master_content_path_str = str(base_dir / BACKEND_DIR / MASTER_CONTENT)
-        self._resource_dir_str = str(base_dir / "resource")
+        self._resource_dir_str = str(base_dir / RESOURCE_DIR)
         self._master_index_path_str = str(Path(self._resource_dir_str) / MASTER_INDEX)
 
         super().__init__() if hasattr(super(), "__init__") else None
         # ENV로 락 경로 오버라이드 허용(멀티 인스턴스/테스트 편의)
         env_lock = os.getenv("SUKSUKIDX_LOCK_PATH")
-        default_lock = base_dir / BACKEND_DIR / ".sync.lock"
+        default_lock = base_dir / DEFAULT_LOCK_PATH
         self._lock_path = Path(env_lock) if env_lock else default_lock
 
     # ---- 내부 Path 헬퍼 ----

@@ -8,7 +8,10 @@ except Exception:
     BeautifulSoup = None
     Comment = None
 
-ROOT_MASTER = "master_index.html"
+try:
+    from .constants import MASTER_INDEX
+except Exception:
+    MASTER_INDEX = "master_index.html"
 
 _BODY_RE = re.compile(r"<body[^>]*>([\s\S]*?)</body>", re.I)
 
@@ -169,7 +172,7 @@ def strip_back_to_master(div_html: str) -> str:
     soup = BeautifulSoup(div_html, "html.parser")
     for a in list(soup.find_all("a", href=True)):
         href = a["href"]
-        if href in (f"../{ROOT_MASTER}", ROOT_MASTER):
+        if href in (f"../{MASTER_INDEX}", MASTER_INDEX):
             if a.find("img"):
                 a.unwrap()
             else:

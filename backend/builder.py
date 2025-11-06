@@ -5,6 +5,12 @@ import os
 import hashlib
 import shutil
 
+try:
+    from .constants import PUBLISH_CSS, CSS_PREFIX
+except Exception:
+    PUBLISH_CSS = "backend/ui/publish.css"
+    CSS_PREFIX = "master"
+
 TOOLBAR_HTML = """
 <div class="card-actions">
   <button class="btn btnEditOne">편집 종료</button>
@@ -139,7 +145,7 @@ def scan_ssot(resource_dir: Path) -> Dict[str, Any]:
 def _read_publish_css(resource_dir: Path) -> Optional[bytes]:
     """backend/ui/publish.css 를 최우선으로 읽고, 없으면 None 반환"""
     base = resource_dir.parent  # 프로젝트 루트
-    p = base / "backend" / "ui" / "publish.css"
+    p = base / PUBLISH_CSS
     if p.exists():
         return p.read_bytes()
     return None
@@ -161,13 +167,12 @@ def _write_if_changed(target: Path, data: bytes) -> None:
     tmp.write_bytes(data)
     tmp.replace(target)
 
-
 def _cleanup_old_css(dirpath: Path, keep_name: str) -> int:
-    """dirpath 내 master.*.css 중 keep_name 이외 삭제"""
+    """dirpath 내 {CSS_PREFIX}.*.css 중 keep_name 이외 삭제"""
     removed = 0
     if not dirpath.exists():
         return removed
-    for p in dirpath.glob("master.*.css"):
+    for p in dirpath.glob(f"{CSS_PREFIX}.*.css"):
         if p.name != keep_name:
             try:
                 p.unlink()
@@ -191,7 +196,7 @@ def ensure_css_assets(resource_dir: Path) -> str:
         return "master.css"
 
     h = _sha1_12(css)
-    basename = f"master.{h}.css"
+    basename = f"{CSS_PREFIX}.{h}.css"
 
     # 루트 배포
     root_target = resource_dir / basename

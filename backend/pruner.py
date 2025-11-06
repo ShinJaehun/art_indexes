@@ -20,9 +20,20 @@ except Exception:
 
 # ---- 유틸: 폴더 스캔 ----
 
-DEFAULT_RESOURCE = "resource"
-MASTER_CONTENT = "master_content.html"
-ROOT_MASTER = "resource/master_index.html"
+try:
+    from .constants import RESOURCE_DIR, MASTER_CONTENT, MASTER_INDEX, BACKEND_DIR
+except Exception:
+    RESOURCE_DIR, MASTER_CONTENT, MASTER_INDEX, BACKEND_DIR = (
+        "resource",
+        "master_content.html",
+        "master_index.html",
+        "backend",
+    )
+
+# ---- Default PATH constants (Path 객체로 고정) ----
+DEFAULT_RESOURCE_PATH = Path(RESOURCE_DIR)
+MASTER_CONTENT_PATH = Path(BACKEND_DIR) / MASTER_CONTENT
+MASTER_INDEX_PATH = Path(RESOURCE_DIR) / MASTER_INDEX
 
 _HIDDEN_DIR = re.compile(r"^(\.|__pycache__|_tmp|_cache)$", re.I)
 
@@ -115,7 +126,7 @@ def read_text_safe(path: Path) -> str:
         return ""
 
 
-def list_master_content_slugs(path: str | Path = MASTER_CONTENT) -> Set[str]:
+def list_master_content_slugs(path: str | Path = MASTER_CONTENT_PATH) -> Set[str]:
     p = Path(path)
     if not p.exists():
         # fallback: 루트의 master_content.html 자동 탐색
@@ -127,7 +138,7 @@ def list_master_content_slugs(path: str | Path = MASTER_CONTENT) -> Set[str]:
     return extract_slugs_from_html(read_text_safe(p))
 
 
-def list_master_index_slugs(path: str | Path = ROOT_MASTER) -> Set[str]:
+def list_master_index_slugs(path: str | Path = MASTER_INDEX_PATH) -> Set[str]:
     p = Path(path)
     if not p.exists():
         # fallback: 루트의 master_content.html 자동 시도
@@ -253,14 +264,19 @@ class PruneReport:
 class DiffReporter:
     def __init__(
         self,
-        resource_root: str | Path = DEFAULT_RESOURCE,
-        master_content_path: str | Path = MASTER_CONTENT,
-        master_index_path: str | Path = ROOT_MASTER,
+        resource_root: str | Path = DEFAULT_RESOURCE_PATH,
+        master_content_path: str | Path = MASTER_CONTENT_PATH,
+        master_index_path: Optional[str | Path] = None,
         check_thumbs: bool = True,
     ) -> None:
         self.resource_root = Path(resource_root)
         self.master_content_path = Path(master_content_path)
-        self.master_index_path = Path(master_index_path)
+        # master_index 경로 기본값
+        self.master_index_path = (
+            Path(master_index_path)
+            if master_index_path is not None
+            else MASTER_INDEX_PATH
+        )
         self.check_thumbs = check_thumbs
 
     def make_report(self) -> PruneReport:
@@ -330,20 +346,21 @@ class PruneApplier:
 
     def __init__(
         self,
-        resource_root: str | Path = DEFAULT_RESOURCE,
-        master_content_path: str | Path = MASTER_CONTENT,
-        master_index_path: str | Path = ROOT_MASTER,
+        resource_root: str | Path = DEFAULT_RESOURCE_PATH,
+        master_content_path: str | Path = MASTER_CONTENT_PATH,
+        master_index_path: Optional[str | Path] = None,
         delete_thumbs: bool = False,
     ) -> None:
         self.resource_root = Path(resource_root)
         self.master_content_path = Path(master_content_path)
-        self.master_index_path = Path(master_index_path)
-        self.delete_thumbs = delete_thumbs
+        # master_index 경로는 항상 호출 지점에서 계산(전역 조합 상수 사용 금지)
+        self.master_index_path = (
+            Path(master_index_path)
+            if master_index_path is not None
+            else MASTER_INDEX_PATH
+        )
 
-        if not self.master_content_path.exists():
-            alt = Path("master_content.html")
-            if alt.exists():
-                self.master_content_path = alt
+        self.delete_thumbs = delete_thumbs
 
     def _imports(self):
         try:
@@ -509,7 +526,9 @@ def _main(argv: List[str]) -> int:
 
     ap = argparse.ArgumentParser(description="ArtIndex Diff & Prune Dry-run Reporter")
     ap.add_argument(
-        "--resource", default=DEFAULT_RESOURCE, help="resource root (default: resource)"
+        "--resource",
+        default=str(DEFAULT_RESOURCE_PATH),
+        help=f"resource root (default: {DEFAULT_RESOURCE_PATH.as_posix()})",
     )
     ap.add_argument(
         "--no-thumbs", action="store_true", help="skip scanning orphan thumbnails"
@@ -524,15 +543,15 @@ def _main(argv: List[str]) -> int:
     args = ap.parse_args(argv)
 
     reporter = DiffReporter(
-        resource_root=args.resource, check_thumbs=not args.no_thumbs
+        resource_root=Path(args.resource), check_thumbs=not args.no_thumbs
     )
     report = reporter.make_report()
 
     if args.apply:
         applier = PruneApplier(
-            resource_root=args.resource,
-            master_content_path=MASTER_CONTENT,
-            master_index_path=ROOT_MASTER,
+            resource_root=Path(args.resource),
+            master_content_path=MASTER_CONTENT_PATH,
+            master_index_path=Path(args.resource) / MASTER_INDEX,
             delete_thumbs=args.delete_thumbs,
         )
         result = applier.apply(report)

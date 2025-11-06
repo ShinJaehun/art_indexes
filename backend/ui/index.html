@@ -4,7 +4,8 @@
   <meta charset="UTF-8" />
   <title>미술 수업 자료 Index</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="./master.css" />
+  <link rel="stylesheet" href="../../resource/master.css" />
+  <link rel="stylesheet" href="./ui.css" />
 </head>
 <body>
   <h1>미술 수업 자료 Index</h1>
@@ -22,6 +23,13 @@
     <button id="btnSaveAll" class="btn" disabled>💾 전체 저장</button>
     <button id="btnRebuild" class="btn">🧱 마스터 재생성</button>
     <button id="btnRegenAll" class="btn">🖼️ 썸네일 일괄 갱신</button>
+
+    <button id="btnPruneDryRun" class="btn">프룬 점검</button>
+    <button id="btnPruneApply" class="btn">프룬 적용</button>
+    <label style="margin-left:.5rem;">
+      <input type="checkbox" id="chkPruneDeleteThumbs">
+      고아 썸네일 삭제
+    </label>
   </div>
 
   <!-- 마스터의 실제 콘텐츠가 여기에 로드됨 -->

@@ -1,22 +1,64 @@
 from __future__ import annotations
 from pathlib import Path
 import subprocess, sys, shlex
-import tempfile, os, shutil
+import tempfile
+import re, unicodedata
+from io import BytesIO
+import os
+
+try:
+    from .fsutil import atomic_write_bytes
+except ImportError:  # 스크립트 모드 대비
+    from fsutil import atomic_write_bytes
 
 # ANNO: Windows 배포를 전제로 exe 동봉 경로를 우선 탐색하되, PATH에도 의존 가능.
 BASE_DIR = Path(__file__).parent
 BIN_DIR = BASE_DIR / "bin"
 FFMPEG_EXE = BIN_DIR / "ffmpeg.exe"
-PDFTOPPM_EXE = (
-    BIN_DIR / "poppler" / "pdftoppm.exe"
-)  # ← poppler/bin 통째로 복사한 폴더 안
-PDFINFO_EXE = BIN_DIR / "poppler" / "pdfinfo.exe"  # ← 페이지 수 조회용(있으면 사용)
+PDFTOPPM_EXE = BIN_DIR / "poppler" / "pdftoppm.exe"  # bin/poppler
+PDFINFO_EXE = BIN_DIR / "poppler" / "pdfinfo.exe"  # 페이지 수 조회용
+
+
+def _imports(self):
+    try:
+        from .htmlops import (
+            extract_inner_html_only,
+            adjust_paths_for_folder,
+            strip_back_to_master,
+        )
+        from .builder import render_master_index, render_child_index
+        from .thumbs import _safe_name as _thumb_safe_name
+    except ImportError:
+        # 스크립트 모드 대비
+        from htmlops import (
+            extract_inner_html_only,
+            adjust_paths_for_folder,
+            strip_back_to_master,
+        )
+        from builder import render_master_index, render_child_index
+        from thumbs import _safe_name as _thumb_safe_name
+
+    return (
+        extract_inner_html_only,
+        adjust_paths_for_folder,
+        strip_back_to_master,
+        render_master_index,
+        render_child_index,
+        _thumb_safe_name,
+    )
 
 
 def _run(cmd: list[str]) -> tuple[int, str, str]:
+    """
+    모든 외부 도구 호출의 출력은 바이너리로 받고, UTF-8로 디코드(errors='ignore').
+    - Windows 로케일(cp949)에서도 안전
+    - 한글/이모지 섞여도 예외 없이 디코드
+    """
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, shell=False)
-        return p.returncode, p.stdout or "", p.stderr or ""
+        p = subprocess.run(cmd, capture_output=True, text=False, shell=False)
+        out = (p.stdout or b"").decode("utf-8", errors="ignore")
+        err = (p.stderr or b"").decode("utf-8", errors="ignore")
+        return p.returncode, out, err
     except FileNotFoundError as e:
         return 127, "", f"FileNotFoundError: {e}"
     except Exception as e:
@@ -25,12 +67,13 @@ def _run(cmd: list[str]) -> tuple[int, str, str]:
 
 def _safe_name(name: str) -> str:
     # 폴더 → 썸네일 파일명 규칙: 공백은 _ 로, 금지문자는 _ 로
-    # HAZARD: build_art_indexes.safe_name과 규칙 차이 주의(일관화 필요). 지금은 변경하지 않음.
+    # 유니코드 표준화(NFKC)로 보기엔 공백인데 다른 문자 문제 완화
+    name = unicodedata.normalize("NFKC", name)
+    # 모든 공백류(스페이스, 탭, NBSP, 얇은공백 등)를 '_'로
+    name = re.sub(r"[\s\u00A0\u202F\u2009\u2007\u2060]+", "_", name)
     out = []
     for c in name:
-        if c in r'\\/:*?"<>|':
-            out.append("_")
-        elif c.isspace():
+        if c in r'\/:*?"<>|':
             out.append("_")
         else:
             out.append(c)
@@ -49,7 +92,7 @@ def _ascii_tmp_prefix(out_jpg: Path) -> tuple[Path, Path]:
     r"""
     ASCII 전용 임시 디렉터리에 파일 prefix를 만든다.
     반환: (tmp_dir, tmp_prefix)
-    예) C:\\Users\\<me>\\AppData\\Local\\Temp\\pdfthumb_tmp\\out_temp_pdfthumb
+    예) C:\Users\<me>\AppData\Local\Temp\pdfthumb_tmp\out_temp_pdfthumb
     """
     base_tmp = Path(tempfile.gettempdir()) / "pdfthumb_tmp"
     base_tmp.mkdir(parents=True, exist_ok=True)
@@ -69,7 +112,7 @@ def _cleanup_tmp_dir(tmp_dir: Path):
 def _pdf_num_pages(pdf_path: Path) -> int | None:
     pdfinfo = _which(PDFINFO_EXE, "pdfinfo")
     try:
-        # ✅ 강제 UTF-8 + 에러 무시 (Windows cp949 문제 회피)
+        # 강제 UTF-8 + 에러 무시 (Windows cp949 문제 회피)
         p = subprocess.run(
             [pdfinfo, str(pdf_path)],
             capture_output=True,
@@ -91,10 +134,6 @@ def _pdf_num_pages(pdf_path: Path) -> int | None:
         return None
 
 
-# --- thumbs.py 내 기존 make_pdf_thumb(...) 함수만 아래 코드로 교체 ---
-# ANNO: 실제로는 교체가 이루어진 상태로 보임. 여기서는 주석만.
-
-
 def make_pdf_thumb(pdf_path: Path, out_jpg: Path, dpi: int = 144) -> bool:
     out_jpg.parent.mkdir(parents=True, exist_ok=True)
 
@@ -104,7 +143,7 @@ def make_pdf_thumb(pdf_path: Path, out_jpg: Path, dpi: int = 144) -> bool:
     n_pages = _pdf_num_pages(pdf_path)
     mid_page = 1 if not n_pages or n_pages <= 0 else max(1, (n_pages + 1) // 2)
 
-    # ✅ ASCII-only 임시 폴더 사용
+    # ASCII-only 임시 폴더 사용
     tmp_dir, tmp_prefix = _ascii_tmp_prefix(out_jpg)
 
     cmd = [
@@ -120,12 +159,19 @@ def make_pdf_thumb(pdf_path: Path, out_jpg: Path, dpi: int = 144) -> bool:
         str(pdf_path),
         str(tmp_prefix),
     ]
+
     rc, _out, err = _run(cmd)
     if rc != 0:
-        print(
-            f"[thumb] PDF->JPG FAIL rc={rc}\nCMD: {shlex.join(cmd)}\nSTDERR:\n{err}",
-            file=sys.stderr,
-        )
+        # ▼ 추가: 암호 문서면 조용히 스킵(로그만 친절히 남김)
+        if "Incorrect password" in err or "password" in err.lower():
+            print(
+                f"[thumb] PDF is password-protected, skip: {pdf_path}", file=sys.stderr
+            )
+        else:
+            print(
+                f"[thumb] PDF->JPG FAIL rc={rc}\nCMD: {shlex.join(cmd)}\nSTDERR:\n{err}",
+                file=sys.stderr,
+            )
         _cleanup_tmp_dir(tmp_dir)
         return False
 
@@ -134,7 +180,6 @@ def make_pdf_thumb(pdf_path: Path, out_jpg: Path, dpi: int = 144) -> bool:
     cand2 = tmp_prefix.with_name(tmp_prefix.name + f"-{mid_page}").with_suffix(".jpg")
     made = cand1 if cand1.exists() else (cand2 if cand2.exists() else None)
     if not made:
-        # 안전망
         alts = list(tmp_dir.glob(tmp_prefix.name + "*.jpg"))
         made = alts[0] if alts else None
         if not made:
@@ -142,8 +187,10 @@ def make_pdf_thumb(pdf_path: Path, out_jpg: Path, dpi: int = 144) -> bool:
             _cleanup_tmp_dir(tmp_dir)
             return False
 
+    # temp 파일을 메모리로 읽어 원자 저장
     try:
-        Path(made).replace(out_jpg)
+        data = Path(made).read_bytes()
+        atomic_write_bytes(str(out_jpg), data)
         print(f"[thumb] PDF->JPG OK (mid={mid_page}): {out_jpg}")
         return True
     finally:
@@ -154,34 +201,52 @@ def make_video_thumb(video_path: Path, out_jpg: Path, width: int = 640) -> bool:
     out_jpg.parent.mkdir(parents=True, exist_ok=True)
     exe = FFMPEG_EXE if FFMPEG_EXE.exists() else Path("ffmpeg")
     vf = f"thumbnail,scale={width}:-1"
-    cmd = [
-        str(exe),
-        "-y",
-        "-ss",
-        "00:00:01",  # 초반 검은 화면 회피
-        "-i",
-        str(video_path),
-        "-vframes",
-        "1",
-        "-vf",
-        vf,
-        str(out_jpg),
-    ]
-    rc, out, err = _run(cmd)
-    if rc != 0:
-        print(
-            f"[thumb] VIDEO->JPG FAIL rc={rc}\nCMD: {shlex.join(cmd)}\nSTDERR:\n{err}",
-            file=sys.stderr,
-        )
-        return False
 
-    ok = out_jpg.exists()
-    print(
-        f"[thumb] VIDEO->JPG OK: {out_jpg}"
-        if ok
-        else f"[thumb] VIDEO->JPG MISSING: {out_jpg}"
-    )
-    return ok
+    # 임시 파일에 먼저 생성(어떤 드라이브여도 OK) → 메모리 로드 → atomic_write_bytes
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix="vidthumb_", suffix=".jpg")
+    os_tmp_path = Path(tmp_path)
+
+    # ffmpeg 실행 전 FD 닫기(Windows 파일 잠금 방지)
+    try:
+        os.close(tmp_fd)
+    except Exception:
+        pass
+
+    try:
+        cmd = [
+            str(exe),
+            "-y",
+            "-ss",
+            "00:00:01",  # 초반 검은 화면 회피
+            "-i",
+            str(video_path),
+            "-vframes",
+            "1",
+            "-vf",
+            vf,
+            str(os_tmp_path),
+        ]
+        rc, out, err = _run(cmd)
+        if rc != 0:
+            print(
+                f"[thumb] VIDEO->JPG FAIL rc={rc}\nCMD: {shlex.join(cmd)}\nSTDERR:\n{err}",
+                file=sys.stderr,
+            )
+            return False
+
+        if not os_tmp_path.exists():
+            print(f"[thumb] VIDEO->JPG MISSING: {out_jpg}", file=sys.stderr)
+            return False
+
+        data = os_tmp_path.read_bytes()
+        atomic_write_bytes(str(out_jpg), data)
+        print(f"[thumb] VIDEO->JPG OK: {out_jpg}")
+        return True
+    finally:
+        try:
+            os_tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
 
 def make_thumbnail_for_folder(folder: Path, max_width: int = 640) -> bool:
@@ -194,11 +259,17 @@ def make_thumbnail_for_folder(folder: Path, max_width: int = 640) -> bool:
 
                 out = folder / "thumbs" / f"{_safe_name(folder.name)}.jpg"
                 out.parent.mkdir(exist_ok=True)
+
                 with Image.open(img) as im:
                     w, h = im.size
                     if w > max_width:
-                        im = im.resize((max_width, int(h * (max_width / w))))
-                    im.convert("RGB").save(out, "JPEG", quality=88)
+                        im = im.resize(
+                            (max_width, int(h * (max_width / w))), Image.LANCZOS
+                        )
+                    buf = BytesIO()
+                    im.convert("RGB").save(buf, "JPEG", quality=88, optimize=True)
+                    atomic_write_bytes(str(out), buf.getvalue())
+
                 print(f"[thumb] OK (image): {out}")
                 return True
             except Exception as e:
@@ -221,3 +292,36 @@ def make_thumbnail_for_folder(folder: Path, max_width: int = 640) -> bool:
 
     print(f"[thumb] SKIP (no source): {folder.name}")
     return False
+
+
+def _iter_content_folders(resource_dir: Path):
+    """
+    리소스 전체 썸네일 스캔/생성 (HTML 생성 없음)
+    """
+    for p in sorted(Path(resource_dir).iterdir(), key=lambda x: x.name):
+        if not p.is_dir():
+            continue
+        if p.name.startswith("."):
+            continue
+        if p.name.lower() == "thumbs":
+            continue
+        yield p
+
+
+def scan_and_make_thumbs(
+    resource_dir: Path, refresh: bool = True, width: int = 640
+) -> bool:
+    """
+    resource/<폴더>들을 훑어 썸네일만 생성/갱신한다.
+    - HTML 파일은 생성하지 않음(SSOT 안전).
+    - 일부 폴더에 소스가 없어도 전체 작업은 성공(True)로 본다.
+    """
+    resource_dir = Path(resource_dir)
+    any_error = False
+    for folder in _iter_content_folders(resource_dir):
+        try:
+            make_thumbnail_for_folder(folder, max_width=width)
+        except Exception as e:
+            print(f"[thumb] ERROR in {folder.name}: {e}", file=sys.stderr)
+            any_error = True
+    return not any_error

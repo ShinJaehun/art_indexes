@@ -1,28 +1,82 @@
 from pathlib import Path
+import sys
 import webview
-from api import MasterApi
+from typing import Optional
 
-# ANNO: 데스크톱 전용 pywebview 앱 엔트리포인트.
-# - base_dir: backend/의 부모(프로젝트 루트)로 설정 → index.html, master_content.html, resource/ 등을 상대 경로로 참조.
-# - url=index_path.as_uri(): 로컬 파일을 직접 띄운다.
-# HAZARD: index.html 내에서 master_content.html을 로드/세이브하는 JS가 버튼을 DOM에 주입했다면,
-#         저장 직전 반드시 UI 컨트롤 제거(clean) 루틴이 필요. (지금은 주석만)
+try:
+    from .api import MasterApi
+except ImportError:
+    from api import MasterApi
+
+try:
+    from .constants import BACKEND_DIR, RESOURCE_DIR
+except Exception:
+    BACKEND_DIR = "backend"
+    RESOURCE_DIR = "resource"
+
+
+def _resolve_base_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
+
+def _resolve_index_path(base_dir: Path) -> Optional[Path]:
+    candidates = [
+        base_dir / BACKEND_DIR / "ui" / "index.html",
+        base_dir / "index.html",  # (구버전 폴백)
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
 
 
 def main():
-    base_dir = Path(__file__).resolve().parents[1]
-    index_path = base_dir / "index.html"
+    base_dir = _resolve_base_dir()
+    index_path = _resolve_index_path(base_dir)
+    if index_path is None:
+        tried = [
+            str(base_dir / "backend" / "ui" / "index.html"),
+            str(base_dir / "index.html"),
+        ]
+        print("[app] ERROR: UI index.html not found. tried:\n  " + "\n  ".join(tried))
+        raise SystemExit(1)
+
+    # resource 폴더 보장
+    resource_dir = base_dir / "resource"
+    resource_dir.mkdir(parents=True, exist_ok=True)
+
+    # JS API 객체 준비
     api = MasterApi(base_dir=base_dir)
 
+    # 창 먼저 생성 (중요)
     window = webview.create_window(
         title="미술 수업 자료 Index",
         url=index_path.as_uri(),
-        js_api=api,
+        js_api=api,  # 여기에 먼저 주입
         width=1100,
         height=800,
         resizable=True,
     )
-    webview.start()
+
+    # pywebview 시작 이후, JS에서 API 노출 확인 로그
+    def on_start():
+        try:
+            window.evaluate_js(
+                "console.log('API keys:', Object.keys(window.pywebview?.api || {}))"
+            )
+        except Exception:
+            pass
+
+    print(f"[app] base_dir={base_dir}")
+    print(f"[app] url={index_path.as_uri()}")
+
+    # 시작 (일부 구버전 백업: js_api 인자도 같이 전달)
+    try:
+        webview.start(func=on_start, debug=True)
+    except TypeError:
+        webview.start(func=on_start, debug=True, js_api=api)
 
 
 if __name__ == "__main__":

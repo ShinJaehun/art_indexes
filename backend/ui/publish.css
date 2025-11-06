@@ -28,7 +28,7 @@ h1 { margin: 0 0 12px; }
 
 .hint { color: var(--muted); font-size: 14px; margin-bottom: 12px; }
 
-.folder {
+.card {
   border: 1px solid var(--bd);
   border-radius: 12px;
   padding: 14px;
@@ -36,7 +36,7 @@ h1 { margin: 0 0 12px; }
 }
 
 /* 헤더는 세로 스택: 제목 → 버튼 → 썸네일 */
-.folder-head {
+.card-head {
   display: flex;
   flex-direction: column;
   align-items: flex-start; /* 제목/버튼/썸네일 좌측 정렬 */
@@ -44,7 +44,7 @@ h1 { margin: 0 0 12px; }
 }
 
 /* 버튼 줄은 가로 배치 */
-.folder-actions {
+.card-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -67,13 +67,13 @@ h1 { margin: 0 0 12px; }
 }
 
 /* 편집 영역은 썸네일 아래에서 시작 */
-.folder > .inner {
+.card > .inner {
   margin-top: 12px;      /* 썸네일과 본문 사이 간격 */
   outline: none;
 }
 
 /* pywebview/브라우저 기본 스타일 충돌 대비 (안전망) */
-.folder h2 {
+.card h2 {
   margin: 0;
 }
 
@@ -93,3 +93,15 @@ img { max-width: 300px; display: block; margin: 10px 0; }
   border-radius: 8px;
   margin: 8px 0 18px;
 }
+
+.status { padding: .6rem .8rem; border-radius: .5rem; margin: .6rem 0; font-size: .95rem; }
+.status.hidden, .status-details.hidden { display: none; }
+.status--ok    { background: #e8fff0; border: 1px solid #9ad3ae; }
+.status--warn  { background: #fff8e6; border: 1px solid #e6c98e; }
+.status--error { background: #ffecec; border: 1px solid #e39b9b; }
+.status-details { padding-left: .25rem; }
+.status-details ul { margin: .25rem 0 0 .9rem; }
+
+a.btn { display:inline-block; padding:.5rem .9rem; border:1px solid #ddd; border-radius:.5rem; text-decoration:none; }
+a.btn:hover { background:#f7f7f7; }
+a.btnExternal::after { content:" ↗"; }

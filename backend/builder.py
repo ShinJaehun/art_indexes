@@ -4,12 +4,23 @@ from typing import Dict, Any, List, Optional
 import os
 import hashlib
 import shutil
+import uuid
 
 try:
     from .constants import PUBLISH_CSS, CSS_PREFIX
 except Exception:
     PUBLISH_CSS = "backend/ui/publish.css"
     CSS_PREFIX = "master"
+
+try:
+    # P3-1: 카드 ID 파일 헬퍼
+    from .fsutil import read_card_id, write_card_id
+except Exception:
+    try:
+        from fsutil import read_card_id, write_card_id
+    except Exception:
+        read_card_id = None
+        write_card_id = None
 
 TOOLBAR_HTML = """
 <div class="card-actions">
@@ -44,6 +55,66 @@ def run_sync_all(resource_dir: Path, thumb_width: int = 640, *, scan_only: bool 
         print(f"❌ internal thumbnail scan failed: {e}")
         return 1
 
+# ---------- 카드 ID 보장 (P3-1) ----------
+def ensure_card_ids(resource_dir: Path) -> dict[str, str]:
+    """
+    resource/ 하위 카드 폴더에 .suksukidx.id 를 보장하고,
+    {folder_name: card_id} 매핑을 반환한다.
+
+    - 숨김 폴더(. 시작)와 'thumbs' 폴더는 제외
+    - 중복 ID가 발견되면 후순위 폴더에 새 UUID를 발급하여 충돌을 해소
+    """
+    if read_card_id is None or write_card_id is None:
+        # 헬퍼를 사용할 수 없는 환경에서는 조용히 폴백(이행기 대비)
+        # 호출 측에서 이 경우 ID 의존 로직을 건너뛸 수 있다.
+        return {}
+
+    folder_to_id: dict[str, str] = {}
+    used_ids: dict[str, str] = {}
+
+    try:
+        entries = sorted(
+            [p for p in resource_dir.iterdir() if p.is_dir() and not p.name.startswith(".")],
+            key=lambda p: p.name,
+        )
+    except Exception as e:
+        print(f"[id] WARN: failed to list resource dir for ids: {e}")
+        return {}
+
+    for d in entries:
+        if d.name.lower() == "thumbs":
+            continue
+        
+        dir_str = str(d)
+        cid = read_card_id(dir_str)
+
+        if not cid:
+            cid = str(uuid.uuid4())
+            try:
+                write_card_id(dir_str, cid)
+                print(f"[id] create {d.name} -> {cid}")
+            except Exception as e:
+                print(f"[id] WARN: failed to write id for {d.name}: {e}")
+                continue
+            
+        # 중복 ID 해소: 이미 사용 중이면 새로 발급
+        if cid in used_ids and used_ids[cid] != d.name:
+            new_cid = str(uuid.uuid4())
+            try:
+                write_card_id(dir_str, new_cid)
+                print(
+                    f"[id] duplicate detected for {d.name} (old:{cid}); "
+                    f"reassigned -> {new_cid}"
+                )
+                cid = new_cid
+            except Exception as e:
+                print(f"[id] WARN: failed to fix duplicate id for {d.name}: {e}")
+                continue
+            
+        used_ids[cid] = d.name
+        folder_to_id[d.name] = cid
+
+    return folder_to_id
 
 def _make_slug(name: str) -> str:
     """
@@ -221,6 +292,7 @@ def _card_block_html(
     inner_html: str,
     thumb_src: str | None = None,
     *,
+    card_id: str | None = None,
     include_toolbar: bool = False,
     editable: bool = False,
 ) -> str:
@@ -232,8 +304,9 @@ def _card_block_html(
     )
     editable_attr = ' contenteditable="true"' if editable else ""
     editable_cls = " editable" if editable else ""
+    data_id_attr = f' data-card-id="{card_id}"' if card_id else ""
     return f"""
-<div class="card" data-card="{title}">
+<div class="card" data-card="{title}"{data_id_attr}>
   <div class="card-head">
     <h2>{title}</h2>
     {toolbar}
@@ -254,13 +327,15 @@ def render_master_index(folders: list[dict], *, css_basename: str = "master.css"
     """
     blocks = []
     for f in folders:
+        card_id = f.get("id") or f.get("card_id")
         blocks.append(
             _card_block_html(
                 title=f.get("title", ""),
                 inner_html=f.get("html", ""),
                 thumb_src=f.get("thumb"),
-                include_toolbar=False,  # 배포 캐시에선 제거
-                editable=False,         # 배포 캐시에선 제거
+                card_id=card_id,
+                include_toolbar=False,
+                editable=False,
             )
         )
 
@@ -283,12 +358,20 @@ def render_master_index(folders: list[dict], *, css_basename: str = "master.css"
     return dedupe_toolbar(html, mode="child")
 
 
-def render_child_index(title: str, html_body: str, thumb_src: str | None, *, css_basename: str = "master.css") -> str:
+def render_child_index(
+    title: str,
+    html_body: str,
+    thumb_src: str | None,
+    *,
+    css_basename: str = "master.css",
+    card_id: str | None = None,
+) -> str:
     # 배포용 child 페이지 또한 편집 UI가 없어야 하므로 include_toolbar=False
     block = _card_block_html(
         title=title,
         inner_html=html_body,
         thumb_src=thumb_src,
+        card_id=card_id,
         include_toolbar=False,
         editable=False,
     )

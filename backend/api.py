@@ -27,6 +27,7 @@ try:
         render_master_index,
         render_child_index,
         ensure_css_assets,
+        ensure_card_ids,
     )
 except Exception:
     from builder import (
@@ -34,6 +35,7 @@ except Exception:
         render_master_index,
         render_child_index,
         ensure_css_assets,
+        ensure_card_ids,
     )
 
 try:
@@ -282,6 +284,13 @@ class MasterApi:
         block_count = 0
         resource_dir = self._p_resource_dir()
 
+        # P3-1: resource/ 폴더에 대한 카드 ID 보장 (.suksukidx.id)
+        try:
+            folder_id_map = ensure_card_ids(resource_dir)
+        except Exception as e:
+            folder_id_map = {}
+            print(f"[id] WARN: ensure_card_ids failed in push: {e}")
+
         cards_for_master: List[Dict[str, Any]] = []
 
         for div in soup.find_all("div", class_="card"):
@@ -294,6 +303,13 @@ class MasterApi:
                 print("[push] WARN: empty <h2> text in a .card block; skipped")
                 continue
             block_count += 1
+
+            # P3-1: 제목(=폴더명 가정)으로 card_id 주입
+            card_id = folder_id_map.get(card_title)
+            if card_id:
+                div["data-card-id"] = card_id
+            else:
+                print(f"[id] WARN: no card_id for title='{card_title}'")
 
             # sanitizer 메트릭 활성화
             cleaned_div_html, san_m = sanitize_for_publish(
@@ -335,11 +351,6 @@ class MasterApi:
             )
             inner_for_master = strip_back_to_master(inner_for_master)
 
-            # child index용
-            inner_for_folder = adjust_paths_for_folder(
-                inner_only, card_title, for_resource_master=False
-            )
-
             # 썸네일 경로
             try:
                 from .thumbs import _safe_name as _thumb_safe_name
@@ -357,38 +368,25 @@ class MasterApi:
                     "title": card_title,
                     "html": inner_for_master,
                     "thumb": thumb_rel_for_master,
+                    "id": card_id,  # P3-1: master에도 data-card-id 주입
                 }
             )
 
-            # child index는 push 마지막에 css_basename 결정 후 렌더
-            child_html = render_child_index(
-                title=card_title,
-                html_body=inner_for_folder,
-                thumb_src=(f"thumbs/{safe}.jpg" if thumb_rel_for_master else None),
-                css_basename="__DEFER__",  # 임시 값(아래에서 실제 해시로 다시 쓰기)
-            )
-            # 임시 저장은 건너뛰고, 아래에서 최종 CSS 이름으로 다시 렌더링하여 기록할 것
-            # (성능상 크게 차이 없으므로 다시 렌더하는 편이 단순함)
-
         # CSS 자산 보장 + 파일명 획득
         css_basename = ensure_css_assets(resource_dir)  # e.g., master.<HASH>.css
-
-        # child index 실제 작성
-        # child_html을 다시 만들어야 하므로 위에서 축적 대신 바로 여기서 생성/쓰기
-        for card in cards_for_master:
-            title = card["title"]
-            inner_for_folder = adjust_paths_for_folder(
-                card["html"], title, for_resource_master=False
-            )
-            # 위 줄은 master용 html이라 다시 adjust하면 2중 보정될 수 있음 → 안전하게 다시 추출 경로:
-            # 간단화를 위해 child는 처음 계산했던 inner_for_folder를 재사용하는 구조가 가장 좋지만
-            # 여기서는 무손실을 위해 원본 soup에서 재추출하는 편이 정석. 다만 성능/간결성상 아래 처리로 충분.
-            # (문제되면 builder 쪽 사양을 조정해 cards_for_master에 child_html도 같이 담도록 변경 가능)
 
         # master/child 모두 최종 렌더 후 파일 기록
         # master
         master_html = render_master_index(cards_for_master, css_basename=css_basename)
         self._write(self._p_master_index(), master_html)
+
+        # master_content.html에도 data-card-id가 채워진 soup를 반영 (P3-1)
+        try:
+            self._write(self._p_master_content(), str(soup))
+        except Exception as e:
+            print(
+                f"[push] WARN: failed to persist data-card-id into master_content: {e}"
+            )
 
         # child
         for div in soup.find_all("div", class_="card"):
@@ -398,6 +396,7 @@ class MasterApi:
             title = h2.get_text(strip=True)
             if not title:
                 continue
+            card_id = folder_id_map.get(title)
 
             cleaned_div_html, _ = sanitize_for_publish(str(div), return_metrics=True)
             inner_only = extract_inner_html_only(cleaned_div_html)
@@ -421,6 +420,7 @@ class MasterApi:
                 html_body=inner_for_folder,
                 thumb_src=thumb_src,
                 css_basename=css_basename,
+                card_id=card_id,
             )
             self._write(self._p_resource_dir() / title / "index.html", child_html)
 

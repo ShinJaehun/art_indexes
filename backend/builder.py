@@ -1,6 +1,7 @@
 from pathlib import Path
 from bs4 import BeautifulSoup
 from typing import Dict, Any, List, Optional
+from typing import Tuple
 import os
 import hashlib
 import shutil
@@ -286,6 +287,37 @@ def ensure_css_assets(resource_dir: Path) -> str:
     return basename
 # ----------------------------------------
 
+def _meta_from_dict(d: Dict[str, Any]) -> Tuple[Optional[bool], Optional[int], Optional[bool], Optional[str]]:
+    """folders 요소(dict)에서 (hidden, order, locked, delete_intent) 안전 추출"""
+    hidden = d.get("hidden", None)
+    if isinstance(hidden, str):
+        hidden = hidden.lower() == "true"
+    elif hidden is not None:
+        hidden = bool(hidden)
+
+    order = d.get("order", None)
+    try:
+        order = int(order) if order is not None and str(order).strip() != "" else None
+    except Exception:
+        order = None
+
+    locked = d.get("locked", None)
+    if isinstance(locked, str):
+        locked = locked.lower() == "true"
+    elif locked is not None:
+        locked = bool(locked)
+
+    delete_intent = d.get("delete_intent") or d.get("deleteIntent") or None
+    if delete_intent not in (None, "hard"):
+        delete_intent = None
+    return hidden, order, locked, delete_intent
+
+def _classes_for_meta(hidden: Optional[bool], locked: Optional[bool], delete_intent: Optional[str]) -> str:
+    classes = []
+    if hidden: classes.append("is-hidden")
+    if locked: classes.append("is-locked")
+    if delete_intent == "hard": classes.append("delete-intent-hard")
+    return (" " + " ".join(classes)) if classes else ""
 
 def _card_block_html(
     title: str,
@@ -293,9 +325,14 @@ def _card_block_html(
     thumb_src: str | None = None,
     *,
     card_id: str | None = None,
+    hidden: Optional[bool] = None,
+    order: Optional[int] = None,
+    locked: Optional[bool] = None,
+    delete_intent: Optional[str] = None,
     include_toolbar: bool = False,
     editable: bool = False,
 ) -> str:
+    meta_cls = _classes_for_meta(hidden, locked, delete_intent)
     toolbar = TOOLBAR_HTML if include_toolbar else ""
     # 빈 thumb-wrap 제거: 썸네일 있을 때만 출력
     thumb_wrap = (
@@ -305,8 +342,12 @@ def _card_block_html(
     editable_attr = ' contenteditable="true"' if editable else ""
     editable_cls = " editable" if editable else ""
     data_id_attr = f' data-card-id="{card_id}"' if card_id else ""
+    data_hidden = f' data-hidden="{str(bool(hidden)).lower()}"' if hidden is not None else ""
+    data_locked = f' data-locked="{str(bool(locked)).lower()}"' if locked is not None else ""
+    data_order  = f' data-order="{order}"' if isinstance(order, int) else ""
+    data_delint = f' data-delete-intent="hard"' if delete_intent == "hard" else ""
     return f"""
-<div class="card" data-card="{title}"{data_id_attr}>
+<div class="card{meta_cls}" data-card="{title}"{data_id_attr}{data_hidden}{data_order}{data_locked}{data_delint}>
   <div class="card-head">
     <h2>{title}</h2>
     {toolbar}
@@ -325,20 +366,34 @@ def render_master_index(folders: list[dict], *, css_basename: str = "master.css"
     - 툴바/편집 속성 없음(배포 캐시에는 편집 UI가 없어야 함)
     - CSS 링크는 css_basename 사용 (예: master.<HASH>.css)
     """
-    blocks = []
-    for f in folders:
+    # 정렬 규칙: order ASC 우선(None은 최하위), 그 다음 제목 ASC
+    def _sort_key(f: dict):
+        _, order, _, _ = _meta_from_dict(f)
+        try:
+            ord_key = int(order) if order is not None else 10**9
+        except Exception:
+            ord_key = 10**9
+        title = f.get("title", "") or ""
+        return (ord_key, title.lower())
+
+    blocks: List[str] = []
+    for f in sorted(folders, key=_sort_key):
         card_id = f.get("id") or f.get("card_id")
+        hidden, order, locked, delete_intent = _meta_from_dict(f)
         blocks.append(
             _card_block_html(
                 title=f.get("title", ""),
                 inner_html=f.get("html", ""),
                 thumb_src=f.get("thumb"),
                 card_id=card_id,
+                hidden=hidden,
+                order=order,
+                locked=locked,
+                delete_intent=delete_intent,
                 include_toolbar=False,
                 editable=False,
-            )
-        )
-
+             )
+         )
     html = f"""
 <!DOCTYPE html>
 <html lang="ko">
@@ -366,7 +421,7 @@ def render_child_index(
     css_basename: str = "master.css",
     card_id: str | None = None,
 ) -> str:
-    # 배포용 child 페이지 또한 편집 UI가 없어야 하므로 include_toolbar=False
+    # child는 메타 표시가 필수는 아니나, 디버깅 편의를 위해 최소한 data-card-id만 유지
     block = _card_block_html(
         title=title,
         inner_html=html_body,

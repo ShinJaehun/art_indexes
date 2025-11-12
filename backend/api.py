@@ -293,6 +293,9 @@ class MasterApi:
 
         cards_for_master: List[Dict[str, Any]] = []
 
+        _hidden_cnt = 0
+        _delint_cnt = 0
+
         for div in soup.find_all("div", class_="card"):
             h2 = div.find("h2")
             if not h2:
@@ -303,6 +306,35 @@ class MasterApi:
                 print("[push] WARN: empty <h2> text in a .card block; skipped")
                 continue
             block_count += 1
+
+            # --- P3-2: 메타 읽기 ---
+            def _b(v: Any) -> Optional[bool]:
+                if v is None:
+                    return None
+                if isinstance(v, str):
+                    return v.strip().lower() == "true"
+                return bool(v)
+
+            meta_hidden = _b(div.get("data-hidden"))
+            meta_locked = _b(div.get("data-locked"))
+            meta_delint = (div.get("data-delete-intent") or "").strip().lower() or None
+            try:
+                meta_order = (
+                    int(div.get("data-order"))
+                    if div.get("data-order")
+                    not in (
+                        None,
+                        "",
+                    )
+                    else None
+                )
+            except Exception:
+                meta_order = None
+
+            if meta_hidden:
+                _hidden_cnt += 1
+            if meta_delint == "hard":
+                _delint_cnt += 1
 
             # P3-1: 제목(=폴더명 가정)으로 card_id 주입
             card_id = folder_id_map.get(card_title)
@@ -369,6 +401,10 @@ class MasterApi:
                     "html": inner_for_master,
                     "thumb": thumb_rel_for_master,
                     "id": card_id,  # P3-1: master에도 data-card-id 주입
+                    "hidden": meta_hidden,  # P3-2: 메타 전달
+                    "order": meta_order,
+                    "locked": meta_locked,
+                    "delete_intent": meta_delint,
                 }
             )
 
@@ -425,6 +461,11 @@ class MasterApi:
             self._write(self._p_resource_dir() / title / "index.html", child_html)
 
         print(f"[push] ok=True blocks={block_count} css={css_basename}")
+
+        if _hidden_cnt or _delint_cnt:
+            print(
+                f"[push] meta: hidden={_hidden_cnt}, delete-intent(hard)={_delint_cnt}"
+            )
         return block_count
 
     # ---- 동기화 ----
@@ -459,6 +500,10 @@ class MasterApi:
                     "sanUnwrappedTags": 0,
                     "sanBlockedUrls": 0,
                 }
+
+                # meta quick counters
+                meta_hidden_total = 0
+                meta_delint_total = 0
 
                 # sanitizer 누적치 초기화
                 self._san_metrics = {
@@ -541,7 +586,8 @@ class MasterApi:
                 metrics["sanRemovedAttrs"] = san.get("removed_attrs", 0)
                 metrics["sanUnwrappedTags"] = san.get("unwrapped_tags", 0)
                 metrics["sanBlockedUrls"] = san.get("blocked_urls", 0)
-
+                # 간이 meta 메트릭
+                # metrics["hiddenCards"] = meta_hidden_total; metrics["deleteIntents"] = meta_delint_total
                 print(
                     f"[sync] done ok={ok} scanOk={scan_ok} pushOk={push_ok} "
                     f"blocks={block_count} durationMs={metrics['durationMs']} "
@@ -714,7 +760,26 @@ class MasterApi:
             master_index_path=self._p_master_index(),
             check_thumbs=include_thumbs,
         )
-        return reporter.make_report().to_dict()
+        rep = reporter.make_report()
+        # 콘솔 요약 로그
+        try:
+            s = rep.summary or {}
+            print(
+                "[prune] DRY-RUN: "
+                f"fs={s.get('fs_slugs')} "
+                f"master={s.get('master_content_slugs')} "
+                f"index={s.get('master_index_slugs')}"
+            )
+            print(
+                "[prune] DRY-RUN: "
+                f"missing_in_fs={len(rep.folders_missing_in_fs or [])} "
+                f"child_missing={len(rep.child_indexes_missing or [])} "
+                f"orphans_in_master_only={len(rep.orphans_in_master_index_only or [])} "
+                f"thumbs_orphans={len(rep.thumbs_orphans or [])}"
+            )
+        except Exception:
+            pass
+        return rep.to_dict()
 
     def prune_apply(
         self, report: Optional[PruneReport] = None, delete_thumbs: bool = False
@@ -738,4 +803,16 @@ class MasterApi:
             master_index_path=self._p_master_index(),
             delete_thumbs=delete_thumbs,
         )
-        return applier.apply(report)
+        result = applier.apply(report)
+        # 콘솔 요약 로그 (선택)
+        try:
+            print(
+                "[prune] APPLY: "
+                f"removed_from_master={result.get('removed_from_master', 0)} "
+                f"child_built={result.get('child_built', 0)} "
+                f"thumbs_deleted={result.get('thumbs_deleted', 0)} "
+                f"delete_thumbs={delete_thumbs}"
+            )
+        except Exception:
+            pass
+        return result

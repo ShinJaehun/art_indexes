@@ -368,6 +368,8 @@ function enhanceBlocks() {
           <button class="btn btnEditOne">편집</button>
           <button class="btn btnSaveOne" disabled>저장</button>
           <button class="btn btnThumb">썸네일 갱신</button>
+          <button class="btn btnToggleHidden">숨김</button>
+          <button class="btn btnToggleDelete">삭제예약</button>
         `;
       }
 
@@ -463,6 +465,34 @@ function enhanceBlocks() {
     const btnEditOne = $(".btnEditOne", actions);
     const btnSaveOne = $(".btnSaveOne", actions);
     const btnThumb = $(".btnThumb", actions);
+
+    const btnToggleHidden = $(".btnToggleHidden", actions);
+    const btnToggleDelete = $(".btnToggleDelete", actions);
+
+    // --- P3-2: 숨김 토글 ---
+    if (btnToggleHidden) {
+      btnToggleHidden.onclick = () => {
+        const curr = (div.getAttribute("data-hidden") || "").trim().toLowerCase();
+        const next = curr === "true" ? "false" : "true";
+        div.setAttribute("data-hidden", next);
+        div.classList.toggle("is-hidden", next === "true");
+      };
+    }
+
+    // --- P3-2: 삭제예약 토글 ---
+    if (btnToggleDelete) {
+      btnToggleDelete.onclick = () => {
+        const curr = (div.getAttribute("data-delete-intent") || "").trim().toLowerCase();
+        const isOn = curr === "hard";
+        if (isOn) {
+          div.removeAttribute("data-delete-intent");
+          div.classList.remove("delete-intent-hard");
+        } else {
+          div.setAttribute("data-delete-intent", "hard");
+          div.classList.add("delete-intent-hard");
+        }
+      };
+    }
 
     // --- 붙여넣기 핸들러 (중복 제거, escape 유틸 사용) ---
     if (inner && !inner.__pasteWired) {
@@ -676,6 +706,17 @@ function serializeMaster() {
 
     const clean = document.createElement("div");
     clean.className = "card";
+
+    // --- P3-2: 기존 data-* 메타 보존 ---
+    ["data-card",
+      "data-card-id",
+      "data-hidden",
+      "data-order",
+      "data-delete-intent"
+    ].forEach(attr => {
+      const v = div.getAttribute(attr);
+      if (v !== null && v !== "") clean.setAttribute(attr, v);
+    });
 
     // h2 (편집 제외)
     const h2 = document.createElement("h2");

@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Dict, Any, Union, List, Optional
+from typing import Dict, Any, Union, List, Optional, Tuple
 import re
 import time
 import os
@@ -97,9 +97,10 @@ except Exception:
     )
 
 try:
-    from bs4 import BeautifulSoup
+    from bs4 import BeautifulSoup, Comment
 except Exception:
     BeautifulSoup = None
+    Comment = None
 
 # -------- 상수 --------
 try:
@@ -550,11 +551,23 @@ class MasterApi:
                     errors.append(f"부트스트랩 실패: {e}")
                     print(f"[bootstrap] failed: {e}")
 
-                # 3) (옵션) 신규 카드 자동 머지 — 기본 OFF
+                # 3) 신규 카드 자동 머지
+                # - resource/ 밑에 새로 생긴 폴더에 대해 master_content.html에 기본 카드 블럭을 추가
+                # - 기본 ON, 필요하면 SUKSUKIDX_AUTO_MERGE_NEW=0 으로 끌 수 있음
                 try:
-                    if os.getenv("SUKSUKIDX_AUTO_MERGE_NEW") == "1":
-                        added = self._ensure_new_folders_in_master()
+                    if os.getenv("SUKSUKIDX_AUTO_MERGE_NEW", "1") != "0":
+                        mc_path = self._p_master_content()
+                        if mc_path.exists():
+                            master_html = mc_path.read_text(encoding="utf-8")
+                        else:
+                            master_html = ""
+
+                        master_html, added = self._ensure_cards_for_new_folders(
+                            master_html
+                        )
+
                         if added > 0:
+                            atomic_write_text(mc_path, master_html, encoding="utf-8")
                             metrics["foldersAdded"] = added
                             print(f"[merge] added cards={added}")
                 except Exception as e:
@@ -659,6 +672,84 @@ class MasterApi:
                     "sanBlockedUrls": 0,
                 },
             }
+
+    def _ensure_cards_for_new_folders(self, master_html: str) -> Tuple[str, int]:
+        """
+        master_content.html이 이미 존재하는 상태에서,
+        resource/ 아래 새로 생긴 폴더에 대한 기본 카드 블럭을 생성해 붙인다.
+
+        반환값:
+          (변경된_html, 추가된_카드_개수)
+        """
+        if BeautifulSoup is None:
+            return master_html, 0
+
+        # master_content가 비어 있는 극단 상황 방어
+        if not master_html.strip():
+            soup = BeautifulSoup("<div id='content'></div>", "html.parser")
+        else:
+            soup = BeautifulSoup(master_html, "html.parser")
+
+        root = soup  # 카드들이 그냥 body 안에만 있다면 soup 전체를 root로 사용
+
+        existing_names: set[str] = set()
+        for card in root.find_all("div", class_="card"):
+            name = card.get("data-card")
+            if name:
+                existing_names.add(name)
+
+        added = 0
+
+        # resource/ 밑의 실제 폴더 목록 기준
+        resource_dir = self._p_resource_dir()
+        for folder in sorted(resource_dir.iterdir()):
+            if not folder.is_dir():
+                continue
+            name = folder.name
+
+            # 숨김/시스템 폴더 거르기 (필요하면 규칙 추가)
+            if name.startswith("."):
+                continue
+
+            # 이미 카드가 있으면 건너뜀
+            if name in existing_names:
+                continue
+
+            # .suksukidx.id에서 ID 읽기 (이미 builder에서 만들어 둠)
+            card_id = None
+            id_file = folder / ".suksukidx.id"
+            if id_file.exists():
+                card_id = id_file.read_text(encoding="utf-8").strip()
+
+            # 혹시라도 id가 없다면 안전하게 생성
+            if not card_id:
+                import uuid
+
+                card_id = str(uuid.uuid4())
+
+            # --- 카드 블럭 생성 ---
+            card_div = soup.new_tag(
+                "div",
+                attrs={"class": "card", "data-card": name, "data-card-id": card_id},
+            )
+
+            head_div = soup.new_tag("div", attrs={"class": "card-head"})
+            h2 = soup.new_tag("h2")
+            h2.string = name
+            head_div.append(h2)
+            card_div.append(head_div)
+
+            inner_div = soup.new_tag("div", attrs={"class": "inner"})
+            inner_div.append(Comment(" 새 카드 기본 본문 "))
+            card_div.append(inner_div)
+
+            root.append(card_div)
+            added += 1
+
+        if not added:
+            return master_html, 0
+
+        return str(soup), added
 
     # ---- 리빌드 → master_content 초기화 ----
     def rebuild_master(self) -> Dict[str, Any]:

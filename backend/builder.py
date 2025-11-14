@@ -366,20 +366,16 @@ def render_master_index(folders: list[dict], *, css_basename: str = "master.css"
     - 툴바/편집 속성 없음(배포 캐시에는 편집 UI가 없어야 함)
     - CSS 링크는 css_basename 사용 (예: master.<HASH>.css)
     """
-    # 정렬 규칙: order ASC 우선(None은 최하위), 그 다음 제목 ASC
-    def _sort_key(f: dict):
-        _, order, _, _ = _meta_from_dict(f)
-        try:
-            ord_key = int(order) if order is not None else 10**9
-        except Exception:
-            ord_key = 10**9
-        title = f.get("title", "") or ""
-        return (ord_key, title.lower())
-
+    # 정렬은 호출 측(MasterApi._push_master_to_resource)이 책임지고,
+    # 여기서는 전달받은 순서를 그대로 사용한다(SSOT = master_content 순서).
     blocks: List[str] = []
-    for f in sorted(folders, key=_sort_key):
+    for f in folders:
         card_id = f.get("id") or f.get("card_id")
         hidden, order, locked, delete_intent = _meta_from_dict(f)
+
+        if hidden:
+            continue
+        
         blocks.append(
             _card_block_html(
                 title=f.get("title", ""),

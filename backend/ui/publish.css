@@ -77,10 +77,48 @@ h1 { margin: 0 0 12px; }
   margin: 0;
 }
 
-/* P3-2: 숨김 표시 */
+/* P3-2: 숨김 시, 카드 전체는 흐림/그레이 처리하되 액션 바는 선명/클릭 가능 */
 .card.is-hidden {
-  opacity: 0.45;
-  filter: grayscale(60%);
+  position: relative;
+}
+
+/* 숨김 라벨 (배지) */
+.card.is-hidden::after {
+  content: "숨김중";
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  font-size: 12px;
+  padding: 2px 6px;
+  border: 1px solid #bbb;
+  border-radius: 6px;
+  background: #f7f7f7;
+  color: #555;
+}
+
+/* 본문/썸네일만 추가 블러 (제목/액션은 읽기 쉬우라고 유지) */
+.card.is-hidden .inner { filter: blur(2px); }
+.card.is-hidden .thumb-wrap img { filter: blur(1.5px) grayscale(80%); }
+
+/* 액션바는 선명 + 항상 클릭 가능하게 */
+.card.is-hidden .card-head .card-actions {
+  filter: none;
+  opacity: 1;
+  position: relative;
+  z-index: 2;
+  pointer-events: auto;
+}
+
+/* 필요하면 편집 방지: 숨김 상태에서는 본문/썸네일 클릭 막기 */
+.card.is-hidden .inner,
+.card.is-hidden .thumb-wrap {
+  pointer-events: none;
+}
+
+/* 선택 사항: 토글이 부드럽게 보이도록 트랜지션 추가 */
+.card .inner,
+.card .thumb-wrap img {
+  transition: filter .2s ease, opacity .2s ease;
 }
 
 /* P3-2: 삭제예약 표시 */

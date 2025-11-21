@@ -1,59 +1,59 @@
 // master.js
-const $ = (s, el = document) => el.querySelector(s);
-const $$ = (s, el = document) => Array.from(el.querySelectorAll(s));
+const $ = (selector, el = document) => el.querySelector(selector);
+const $$ = (selector, el = document) => Array.from(el.querySelectorAll(selector));
 
 let _loadingMaster = false;
 let _bridgeReadyOnce = false;
 let hasBridge = false;
-let _toolbarWired = false;
 let _statusTimer = null;
+let _metaSaveTimer = null;
 
-// --- paste modifier 키 상태 추적 (Shift/Alt 감지)---
+// --- paste modifier 키 상태 추적 (Shift/Alt 감지) ---
 const __pasteMods = { shift: false, alt: false };
-window.addEventListener("keydown", (e) => {
-  if (e.key === "Shift") __pasteMods.shift = true;
-  if (e.key === "Alt") __pasteMods.alt = true;
+window.addEventListener("keydown", (evt) => {
+  if (evt.key === "Shift") __pasteMods.shift = true;
+  if (evt.key === "Alt") __pasteMods.alt = true;
 });
-window.addEventListener("keyup", (e) => {
-  if (e.key === "Shift") __pasteMods.shift = false;
-  if (e.key === "Alt") __pasteMods.alt = false;
+window.addEventListener("keyup", (evt) => {
+  if (evt.key === "Shift") __pasteMods.shift = false;
+  if (evt.key === "Alt") __pasteMods.alt = false;
 });
 window.addEventListener("blur", () => { __pasteMods.shift = __pasteMods.alt = false; });
 
 // --- escape 유틸 ---
-function escapeHTML(s) {
+function escapeHTML(text) {
   const div = document.createElement("div");
-  div.textContent = s == null ? "" : String(s);
+  div.textContent = text == null ? "" : String(text);
   return div.innerHTML;
 }
 
 // --- 외부 링크 버튼화 & 보안 속성 보강 ---
 function decorateExternalLinks(scopeEl) {
   const links = scopeEl.querySelectorAll('a[href]');
-  links.forEach(a => {
+  links.forEach(anchor => {
 
-    let href = (a.getAttribute('href') || '').trim();
+    let href = (anchor.getAttribute('href') || '').trim();
     // 스킴이 없고, www. 또는 도메인 형태라면 https:// 보강
     if (!/^(?:https?:\/\/|mailto:|tel:|#|\/|\.\.\/)/i.test(href)) {
       if (/^(?:www\.|(?:[a-z0-9-]+\.)+[a-z]{2,})/i.test(href)) {
         href = `https://${href}`;
-        a.setAttribute('href', href);
+        anchor.setAttribute('href', href);
       }
     }
     if (!/^https?:\/\//i.test(href)) return; // 외부 http(s)만 버튼화 대상
-    a.setAttribute('target', '_blank');
+    anchor.setAttribute('target', '_blank');
 
     // 기존 rel 유지 + 보안 속성 보장
-    const relSet = new Set(((a.getAttribute('rel') || '')).split(/\s+/).filter(Boolean));
+    const relSet = new Set(((anchor.getAttribute('rel') || '')).split(/\s+/).filter(Boolean));
     relSet.add('noopener'); relSet.add('noreferrer');
-    a.setAttribute('rel', Array.from(relSet).join(' '));
+    anchor.setAttribute('rel', Array.from(relSet).join(' '));
     // 버튼 스타일(있으면 유지)
-    a.classList.add('btn', 'btnExternal');
+    anchor.classList.add('btn', 'btnExternal');
     // 라벨이 비어있으면 도메인으로 기본 라벨
-    if (!a.textContent.trim()) {
+    if (!anchor.textContent.trim()) {
       try {
-        const u = new URL(href);
-        a.textContent = `열기 (${u.hostname})`;
+        const urlObj = new URL(href);
+        anchor.textContent = `열기 (${urlObj.hostname})`;
       } catch { /* noop */ }
     }
   });
@@ -69,18 +69,18 @@ function autoLinkify(scopeEl) {
     NodeFilter.SHOW_TEXT,
     {
       acceptNode(node) {
-        const s = node.nodeValue;
-        if (!s) return NodeFilter.FILTER_REJECT;
+        const nodeText = node.nodeValue;
+        if (!nodeText) return NodeFilter.FILTER_REJECT;
 
         // ✅ 1) HTML 엔티티/태그 기호가 섞인 텍스트는 건너뜀
-        if (/[<>]/.test(s) || /&lt;|&gt;/i.test(s)) return NodeFilter.FILTER_REJECT;
+        if (/[<>]/.test(nodeText) || /&lt;|&gt;/i.test(nodeText)) return NodeFilter.FILTER_REJECT;
 
         // URL 패턴이 없으면 스킵
-        if (!urlRe.test(s)) return NodeFilter.FILTER_REJECT;
+        if (!urlRe.test(nodeText)) return NodeFilter.FILTER_REJECT;
 
         // a/pre/code/script/style 내부는 건너뜀
-        const p = node.parentElement;
-        if (p && p.closest('a, pre, code, script, style')) {
+        const parentEl = node.parentElement;
+        if (parentEl && parentEl.closest('a, pre, code, script, style')) {
           return NodeFilter.FILTER_REJECT;
         }
         return NodeFilter.FILTER_ACCEPT;
@@ -89,20 +89,20 @@ function autoLinkify(scopeEl) {
   );
 
   const nodes = [];
-  let n;
-  while ((n = walker.nextNode())) nodes.push(n);
+  let node;
+  while ((node = walker.nextNode())) nodes.push(node);
 
   nodes.forEach(textNode => {
-    const text = textNode.nodeValue;
+    const rawText = textNode.nodeValue;
 
     // ✅ 2) 따옴표 안 구간 범위 미리 수집 → 그 안의 매치는 스킵
     const quoteRanges = [];
     const quoteRe = /"[^"]*"|'[^']*'/g;
-    let qm;
-    while ((qm = quoteRe.exec(text)) !== null) {
-      quoteRanges.push([qm.index, qm.index + qm[0].length]); // [start, end)
+    let quoteMatch;
+    while ((quoteMatch = quoteRe.exec(rawText)) !== null) {
+      quoteRanges.push([quoteMatch.index, quoteMatch.index + quoteMatch[0].length]); // [start, end)
     }
-    const inQuoted = (idx) => quoteRanges.some(([s, e]) => idx >= s && idx < e);
+    const inQuoted = (idx) => quoteRanges.some(([startIdx, endIdx]) => idx >= startIdx && idx < endIdx);
 
     urlRe.lastIndex = 0;
 
@@ -110,7 +110,7 @@ function autoLinkify(scopeEl) {
     let lastIdx = 0;
     const frag = document.createDocumentFragment();
 
-    while ((match = urlRe.exec(text)) !== null) {
+    while ((match = urlRe.exec(rawText)) !== null) {
       const start = match.index;
       const end = start + match[0].length;
 
@@ -118,7 +118,7 @@ function autoLinkify(scopeEl) {
       if (inQuoted(start)) continue;
 
       if (start > lastIdx) {
-        frag.appendChild(document.createTextNode(text.slice(lastIdx, start)));
+        frag.appendChild(document.createTextNode(rawText.slice(lastIdx, start)));
       }
 
       const raw = match[0];
@@ -129,20 +129,20 @@ function autoLinkify(scopeEl) {
         href = /^\/\//.test(raw) ? `https:${raw}` : `https://${raw}`;
       }
 
-      const a = document.createElement('a');
-      a.href = href;                // 실제 링크는 정규화된 href
-      a.textContent = raw;          // 화면에는 사용자가 쓴 원문 표시
-      a.target = '_blank';
-      a.rel = 'noopener noreferrer';
-      a.classList.add('btn', 'btnExternal');
-      frag.appendChild(a);
+      const anchor = document.createElement('a');
+      anchor.href = href;                // 실제 링크는 정규화된 href
+      anchor.textContent = raw;          // 화면에는 사용자가 쓴 원문 표시
+      anchor.target = '_blank';
+      anchor.rel = 'noopener noreferrer';
+      anchor.classList.add('btn', 'btnExternal');
+      frag.appendChild(anchor);
 
       lastIdx = end;
     }
 
     // 남은 꼬리 텍스트
-    if (lastIdx < text.length) {
-      frag.appendChild(document.createTextNode(text.slice(lastIdx)));
+    if (lastIdx < rawText.length) {
+      frag.appendChild(document.createTextNode(rawText.slice(lastIdx)));
     }
 
     // 매치가 하나도 없고 변경도 없으면 교체 불필요
@@ -159,9 +159,6 @@ function ensureStatusUI() {
     bar = document.createElement("div");
     bar.id = "statusBar";
     bar.className = "status hidden"; // CSS: .status{padding:.6rem;border-radius:.5rem;margin:.5rem 0}
-    // CSS 예: .status--ok{background:#e8fff0;border:1px solid #9ad3ae}
-    //         .status--warn{background:#fff8e6;border:1px solid #e6c98e}
-    //         .status--error{background:#ffecec;border:1px solid #e39b9b}
     $("#content").insertAdjacentElement("beforebegin", bar);
   }
 
@@ -170,7 +167,6 @@ function ensureStatusUI() {
     details = document.createElement("div");
     details.id = "statusDetails";
     details.className = "status-details hidden";
-    // CSS 예: .status-details{font-size:.95rem;margin:.25rem 0 1rem}
     bar.insertAdjacentElement("afterend", details);
   }
   return { bar, details };
@@ -186,7 +182,6 @@ function clearStatus() {
 }
 
 function showStatus({ level, title, lines = [], errors = [], metrics = null, autoHideMs = null }) {
-  // 기존 타이머가 있으면 먼저 클리어
   if (_statusTimer) { clearTimeout(_statusTimer); _statusTimer = null; }
 
   const { bar, details } = ensureStatusUI();
@@ -206,7 +201,7 @@ function showStatus({ level, title, lines = [], errors = [], metrics = null, aut
   if (Array.isArray(lines) && lines.length) parts.push(...lines);
   if (Array.isArray(errors) && errors.length) {
     parts.push(`<details open><summary>오류 ${errors.length}개</summary><ul>` +
-      errors.map(e => `<li>${e}</li>`).join("") + `</ul></details>`);
+      errors.map(err => `<li>${err}</li>`).join("") + `</ul></details>`);
   }
 
   if (parts.length) {
@@ -217,7 +212,6 @@ function showStatus({ level, title, lines = [], errors = [], metrics = null, aut
     details.innerHTML = "";
   }
 
-  // ✅ auto-hide: ms 지정 시 그 시간 후 자동으로 감춤
   if (typeof autoHideMs === "number" && autoHideMs > 0) {
     _statusTimer = setTimeout(() => {
       _statusTimer = null;
@@ -226,14 +220,13 @@ function showStatus({ level, title, lines = [], errors = [], metrics = null, aut
   }
 }
 
-function renderSyncResult(r) {
+function renderSyncResult(result) {
   const lines = [
-    `썸네일 스캔: ${r.scanOk ? "OK" : "FAIL"}`,
-    `파일 반영: ${r.pushOk ? "OK" : "FAIL"}`
+    `썸네일 스캔: ${result.scanOk ? "OK" : "FAIL"}`,
+    `파일 반영: ${result.pushOk ? "OK" : "FAIL"}`
   ];
 
-  // 순수 성공(둘 다 OK, 에러 없음) → 플래시
-  const pureOk = r.ok && r.scanOk && r.pushOk && (!r.errors || r.errors.length === 0);
+  const pureOk = result.ok && result.scanOk && result.pushOk && (!result.errors || result.errors.length === 0);
 
   if (pureOk) {
     showStatus({
@@ -241,46 +234,78 @@ function renderSyncResult(r) {
       title: "동기화 완료",
       lines,
       errors: [],
-      metrics: r.metrics || null,
-      autoHideMs: 2500,         // ✅ 성공은 자동 숨김
+      metrics: result.metrics || null,
+      autoHideMs: 2500,
     });
     return;
   }
 
-  // 부분 성공(경고 표시, 유지)
-  if (r.ok) {
+  if (result.ok) {
     showStatus({
       level: "warn",
       title: "동기화 부분 완료",
       lines,
-      errors: r.errors || [],
-      metrics: r.metrics || null,
-      // autoHide 없음 → 남겨둠
+      errors: result.errors || [],
+      metrics: result.metrics || null,
     });
     return;
   }
 
-  // 실패(유지)
   showStatus({
     level: "error",
     title: "동기화 실패",
     lines,
-    errors: r.errors || [],
-    metrics: r.metrics || null,
+    errors: result.errors || [],
+    metrics: result.metrics || null,
   });
 }
 
 function detectBridge() {
-  hasBridge = !!(window.pywebview && window.pywebview.api);
+  // API 객체가 있고, 키도 하나 이상 있어야 "실제 준비됨"으로 판단
+  const api = (window.pywebview && window.pywebview.api) || null;
+  hasBridge = !!(api && Object.keys(api).length > 0);
+
   $("#readonlyNote")?.classList.toggle("hidden", hasBridge);
   const toolbar = $("#globalToolbar");
   if (toolbar) toolbar.style.visibility = hasBridge ? "visible" : "hidden";
 }
 
+// API 준비를 보장하는 유틸: 특정 메서드들이 function이 될 때까지 대기
+async function waitForApi(methods = [], timeoutMs = 3000, interval = 50) {
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    (function check() {
+      const api = (window.pywebview && window.pywebview.api) || null;
+      const ok =
+        !!api &&
+        (methods.length === 0 ||
+          methods.every((m) => typeof api[m] === "function"));
+      if (ok) return resolve(api);
+      if (Date.now() - start > timeoutMs) {
+        return reject(new Error("API not ready within timeout"));
+      }
+      setTimeout(check, interval);
+    })();
+  });
+}
+
+
 async function onBridgeReady() {
   if (_bridgeReadyOnce) return;
   _bridgeReadyOnce = true;
   detectBridge();
+  try {
+    // get_master/save_master/refresh_thumb/sync 가 준비될 때까지 대기
+    await waitForApi(["get_master", "save_master", "refresh_thumb", "sync"]);
+  } catch (e) {
+    console.error(e);
+    showStatus({
+      level: "error",
+      title: "브리지 준비 실패",
+      lines: [String(e?.message || e)],
+    });
+    return;
+  }
   await loadMaster();
 }
 
@@ -290,12 +315,18 @@ document.addEventListener("DOMContentLoaded", async () => {
     const blocks = $$(".card", document);
     $("#content").innerHTML = "";
     if (blocks.length) {
-      for (const b of blocks) $("#content").appendChild(b.cloneNode(true));
+      for (const block of blocks) $("#content").appendChild(block.cloneNode(true));
     } else {
       $("#content").innerHTML = `<p class="hint">브라우저 미리보기: <code>.card</code> 블록이 없습니다.</p>`;
     }
     enhanceBlocks();
     wireGlobalToolbar();
+
+    // 브라우저 미리보기 모드에서도 보조 툴바가 있다면 연결
+    if (typeof window.wireExtraToolbar === "function") {
+      window.wireExtraToolbar();
+    }
+
   } else {
     await loadMaster();
   }
@@ -316,13 +347,79 @@ window.addEventListener("pywebviewready", onBridgeReady);
 })();
 
 async function call(method, ...args) {
-  if (!hasBridge) throw new Error("pywebview bridge not available");
+  // 1) 대상 메서드가 실제 function이 될 때까지 대기하고 api 핸들 확보
+  let api;
   try {
-    return await window.pywebview.api[method](...args);
+    api = await waitForApi([method], 3000);
   } catch (e) {
-    console.error(`[bridge:${method}]`, e);
-    throw e;
+    // 타임아웃/미준비 시 더 읽기 쉬운 에러 메시지
+    const keys = Object.keys((window.pywebview && window.pywebview.api) || {});
+    throw new Error(
+      `pywebview bridge not available or '${method}' not ready: ${e?.message || e}. ` +
+      `Available methods now: [${keys.join(", ")}]`
+    );
   }
+
+  // 2) 안전하게 메서드 호출
+  const fn = api[method];
+  if (typeof fn !== "function") {
+    const keys = Object.keys(api || {});
+    throw new Error(
+      `window.pywebview.api["${method}"] is not a function. ` +
+      `Available: ${keys.join(", ")}`
+    );
+  }
+
+  try {
+    return await fn(...args);
+  } catch (err) {
+    console.error(`[bridge:${method}]`, err);
+    throw err;
+  }
+}
+
+// ---- 메타 자동 저장(디바운스) --------------------------------------------
+function queueMetaSave() {
+  if (!hasBridge) return; // 브라우저 미리보기 모드에서는 생략
+  if (_metaSaveTimer) clearTimeout(_metaSaveTimer);
+  _metaSaveTimer = setTimeout(async () => {
+    try {
+      // 메타만 바뀐 경우에도 전체 직렬화로 저장(간단/일관)
+      await call("save_master", serializeMaster());
+      showStatus({ level: "ok", title: "변경사항 저장", autoHideMs: 1200 });
+    } catch (e) {
+      console.error(e);
+      showStatus({ level: "error", title: "저장 실패", lines: [String(e?.message || e)] });
+    } finally {
+      _metaSaveTimer = null;
+    }
+  }, 500);
+}
+
+// 글로벌 툴바: Sync 전 선저장
+function wireGlobalToolbar() {
+  const btnSync = document.querySelector("#btnSync");
+  if (!btnSync || btnSync.__wired) return;
+  btnSync.__wired = true;
+  btnSync.addEventListener("click", async () => {
+    if (!hasBridge) {
+      return showStatus({ level: "warn", title: "데스크톱 앱에서만 동기화 가능합니다." });
+    }
+    try {
+
+      // 1) 현재 화면 상태 저장
+      await call("save_master", serializeMaster());
+      // 2) 백엔드 동기화
+      showStatus({ level: "warn", title: "동기화 중…" });
+      const r = await call("sync");
+      renderSyncResult(r);
+      // 3) 최신 상태 재로드
+      await loadMaster();
+    } catch (e) {
+      console.error(e);
+      showStatus({ level: "error", title: "동기화 실패", lines: [String(e?.message || e)] });
+    }
+  });
 }
 
 async function loadMaster() {
@@ -336,17 +433,22 @@ async function loadMaster() {
       const blocks = $$(".card", document);
       $("#content").innerHTML = "";
       if (blocks.length) {
-        for (const b of blocks) $("#content").appendChild(b.cloneNode(true));
+        for (const block of blocks) $("#content").appendChild(block.cloneNode(true));
       } else {
         $("#content").innerHTML = `<p class="hint">브라우저 미리보기: <code>.card</code> 블록이 없습니다.</p>`;
       }
     }
     enhanceBlocks();
     wireGlobalToolbar();
-    clearStatus();
-  } catch (e) {
-    console.error(e);
-    showStatus({ level: "error", title: "로드 실패", lines: [String(e?.message || e)] });
+
+    // toolbar.js가 제공하는 보조 툴바 바인딩(재빌드/프룬 등)
+    if (typeof window.wireExtraToolbar === "function") {
+      window.wireExtraToolbar();
+    }
+
+  } catch (exc) {
+    console.error(exc);
+    showStatus({ level: "error", title: "로드 실패", lines: [String(exc?.message || exc)] });
   } finally {
     _loadingMaster = false;
   }
@@ -355,6 +457,34 @@ async function loadMaster() {
 function enhanceBlocks() {
   $$(".card").forEach(div => {
     if (div.__enhanced) return;
+
+    function updateHiddenUI(div, btnToggleHidden) {
+      const isHidden = ((div.getAttribute("data-hidden") || "").trim().toLowerCase() === "true");
+      // 클래스(시각) 동기화
+      div.classList.toggle("is-hidden", isHidden);
+      // 버튼 라벨/상태 동기화
+      if (btnToggleHidden) {
+        btnToggleHidden.textContent = isHidden ? "숨김 해제" : "숨김";
+        btnToggleHidden.setAttribute("aria-pressed", String(isHidden));
+        btnToggleHidden.title = isHidden ? "숨김을 해제합니다" : "이 카드를 숨깁니다";
+
+        // 옵션: 숨김 중 편집/저장 비활성
+        const actions = div.querySelector(".card-actions");
+        actions?.querySelector(".btnEditOne") && (actions.querySelector(".btnEditOne").disabled = isHidden);
+        actions?.querySelector(".btnSaveOne") && (actions.querySelector(".btnSaveOne").disabled = isHidden);
+      }
+    }
+
+    // --- 초기 메타 표시: data-* → 클래스 반영 (재로드/Sync 후에도 시각 상태 유지)
+    (function applyMetaFromData(el) {
+      const hidden = (el.getAttribute("data-hidden") || "").trim().toLowerCase() === "true";
+      const delint = (el.getAttribute("data-delete-intent") || "").trim().toLowerCase() === "hard";
+      const locked = (el.getAttribute("data-locked") || "").trim().toLowerCase() === "true";
+      el.classList.toggle("delete-intent-hard", delint);
+      el.classList.toggle("is-locked", locked);
+      // hidden은 버튼이 만들어진 뒤에 라벨까지 맞춰줘야 하므로 여기서는 클래스만 예비 반영(옵션)
+      el.classList.toggle("is-hidden", hidden);
+    })(div);
 
     // head: h2 → actions → thumb-wrap 순서 보정
     function normalizeHead(headEl) {
@@ -369,12 +499,31 @@ function enhanceBlocks() {
           <button class="btn btnEditOne">편집</button>
           <button class="btn btnSaveOne" disabled>저장</button>
           <button class="btn btnThumb">썸네일 갱신</button>
+          <button class="btn btnToggleHidden">숨김</button>
+          <button class="btn btnToggleDelete">삭제</button>
         `;
       }
 
       if (h2) headEl.appendChild(h2);
+
+      // 기존 메타 라벨 제거 후, data-created-at 기반 생성일 표시
+      headEl.querySelectorAll(".card-meta").forEach(el => el.remove());
+      const cardEl = headEl.closest(".card");
+      const createdRaw = (cardEl?.getAttribute("data-created-at") || "").trim();
+      if (createdRaw) {
+        const metaSpan = document.createElement("span");
+        metaSpan.className = "card-meta";
+        // YYYY-MM-DD까지만 표시
+        metaSpan.textContent = createdRaw.slice(0, 10);
+        if (h2 && h2.parentNode === headEl) {
+          h2.insertAdjacentElement("afterend", metaSpan);
+        } else {
+          headEl.appendChild(metaSpan);
+        }
+      }
+
       headEl.appendChild(actions);
-      // thumbWrap은 '필요할 때만' 생성: 아래에서 후보 이미지를 옮길 때 만든다.
+
       if (thumbWrap) headEl.appendChild(thumbWrap);
       return { actions, thumbWrap };
     }
@@ -392,22 +541,22 @@ function enhanceBlocks() {
       let { thumbWrap } = normalizeHead(head);
 
       // head 다음 형제 중 썸네일 후보를 thumb-wrap으로 이동
-      let node = head.nextSibling;
-      while (node) {
-        const next = node.nextSibling;
+      let sibling = head.nextSibling;
+      while (sibling) {
+        const nextSibling = sibling.nextSibling;
         if (
-          node.nodeType === 1 && node.matches &&
-          (node.matches("img.thumb, img[alt='썸네일']") ||
-            (node.tagName === "IMG" && /\/thumbs\//.test(node.getAttribute("src") || "")))
+          sibling.nodeType === 1 && sibling.matches &&
+          (sibling.matches("img.thumb, img[alt='썸네일']") ||
+            (sibling.tagName === "IMG" && /\/thumbs\//.test(sibling.getAttribute("src") || "")))
         ) {
           if (!thumbWrap) {
             thumbWrap = document.createElement("div");
             thumbWrap.className = "thumb-wrap";
             head.appendChild(thumbWrap);
           }
-          thumbWrap.appendChild(node);
+          thumbWrap.appendChild(sibling);
         }
-        node = next;
+        sibling = nextSibling;
       }
 
       // .inner 생성 및 나머지 내용을 .inner로 이동
@@ -415,10 +564,10 @@ function enhanceBlocks() {
       if (!innerEl) {
         innerEl = document.createElement("div");
         innerEl.className = "inner";
-        const rest = [];
-        let n = head.nextSibling;
-        while (n) { rest.push(n); n = n.nextSibling; }
-        rest.forEach(nd => innerEl.appendChild(nd));
+        const leftovers = [];
+        let moveNode = head.nextSibling;
+        while (moveNode) { leftovers.push(moveNode); moveNode = moveNode.nextSibling; }
+        leftovers.forEach(nd => innerEl.appendChild(nd));
         div.appendChild(innerEl);
       }
 
@@ -435,7 +584,6 @@ function enhanceBlocks() {
       }
 
     } else {
-      // 기존 thumb-wrap이 없으면 만들지 않음(후보가 있을 때만 위에서 생성)
       const head = $(".card-head", div);
       normalizeHead(head);
     }
@@ -465,34 +613,108 @@ function enhanceBlocks() {
     const btnSaveOne = $(".btnSaveOne", actions);
     const btnThumb = $(".btnThumb", actions);
 
+    const btnToggleHidden = $(".btnToggleHidden", actions);
+    const btnDelete = $(".btnToggleDelete", actions);
+
+    // --- P3-2: 숨김 토글 ---
+    if (btnToggleHidden) {
+
+      updateHiddenUI(div, btnToggleHidden);
+
+      btnToggleHidden.onclick = () => {
+        const curr = (div.getAttribute("data-hidden") || "").trim().toLowerCase() === "true";
+        const next = !curr;
+        div.setAttribute("data-hidden", String(next));
+        updateHiddenUI(div, btnToggleHidden); // 라벨/클래스 같이 갱신
+        queueMetaSave();                       // 저장(→ master_content에 반영됨)
+      };
+    }
+
+    if (btnDelete) {
+      btnDelete.textContent = "삭제";
+      btnDelete.onclick = async () => {
+        if (!hasBridge) return alert("삭제는 데스크톱 앱에서만 가능합니다.");
+
+        const cardId = div.getAttribute("data-card-id");
+        const cardTitle = (div.getAttribute("data-card") || title?.textContent || "").trim();
+
+        if (!cardId) {
+          return alert("card_id가 없어 삭제할 수 없습니다(동기화 후 다시 시도).");
+        }
+
+        const ok = confirm(
+          `정말 삭제할까요?\n\n- 제목: ${cardTitle}\n- ID: ${cardId}\n\n폴더 및 자료가 영구 삭제됩니다.`
+        );
+        if (!ok) return;
+
+        try {
+          showStatus({ level: "warn", title: "삭제 중…", lines: [cardTitle] });
+
+          const r = await call("delete_card_by_id", cardId);
+          if (!r?.ok) {
+            const errs = [];
+            if (Array.isArray(r?.errors) && r.errors.length) {
+              errs.push(...r.errors);
+            } else if (r?.error) {
+              errs.push(r.error);
+            } else {
+              errs.push(`삭제 실패(card_id=${cardId})`);
+            }
+            showStatus({
+              level: "error",
+              title: "삭제 실패",
+              errors: errs,
+            });
+            return;
+          }
+
+          showStatus({
+            level: "ok",
+            title: "삭제 완료",
+            lines: [cardTitle],
+            autoHideMs: 4000,
+          });
+
+          await loadMaster();
+        } catch (exc) {
+          console.error(exc);
+          showStatus({
+            level: "error",
+            title: "삭제 예외",
+            errors: [String(exc?.message || exc)],
+          });
+        }
+      };
+    }
+
     // --- 붙여넣기 핸들러 (중복 제거, escape 유틸 사용) ---
     if (inner && !inner.__pasteWired) {
-      inner.addEventListener("paste", (e) => {
+      inner.addEventListener("paste", (evt) => {
         try {
-          if (!e.clipboardData) return;
+          if (!evt.clipboardData) return;
 
           // Shift/Alt 누르면 "문자 그대로 붙여넣기" 모드
           const forceLiteral = __pasteMods.shift || __pasteMods.alt;
 
           // 1) HTML 클립보드가 있고 literal이 아니면 → 그대로 삽입
-          const html = e.clipboardData.getData("text/html");
+          const html = evt.clipboardData.getData("text/html");
           if (html && !forceLiteral) {
-            e.preventDefault();
+            evt.preventDefault();
             document.execCommand("insertHTML", false, html);
             return;
           }
 
           // 2) 평문 처리
-          const raw = e.clipboardData.getData("text/plain");
+          const raw = evt.clipboardData.getData("text/plain");
           if (!raw) return;
 
           const hasLiteralTags = /<[^>]+>/.test(raw);      // <h2>...</h2>
           const hasEscapedTags = /&lt;[^&]+&gt;/.test(raw);// &lt;h2&gt;...&lt;/h2&gt;
-          const hasCodeFence = /(^|\n)```/.test(raw);    // 코드펜스
+          const hasCodeFence = /(^|\n)```/.test(raw);      // 코드펜스
 
           // 2-A) 문자 그대로 붙여넣기(코드펜스 or 강제 literal)
           if (forceLiteral || hasCodeFence) {
-            e.preventDefault();
+            evt.preventDefault();
             const stripped = raw.replace(/(^|\n)```([\s\S]*?)```/g, (_, pre, body) => pre + body);
             const literal = escapeHTML(stripped);
             document.execCommand("insertHTML", false, `<pre><code>${literal}</code></pre>`);
@@ -501,7 +723,7 @@ function enhanceBlocks() {
 
           // 2-B) 태그형 텍스트를 실제 HTML로 삽입 (보안 필터 포함)
           if (hasLiteralTags || hasEscapedTags) {
-            e.preventDefault();
+            evt.preventDefault();
 
             // &lt;…&gt; → 언이스케이프
             let decoded = raw;
@@ -522,42 +744,38 @@ function enhanceBlocks() {
             divTmp.querySelectorAll(Array.from(danger).join(",")).forEach(n => n.remove());
             divTmp.querySelectorAll("*").forEach(el => {
               [...el.attributes].forEach(attr => {
-                const k = attr.name.toLowerCase();
-                const v = (attr.value || "").trim().toLowerCase();
-                if (k.startsWith("on") || k === "style" || k === "contenteditable" || k === "draggable" || k.startsWith("data-")) {
+                const key = attr.name.toLowerCase();
+                const val = (attr.value || "").trim().toLowerCase();
+                if (key.startsWith("on") || key === "style" || key === "contenteditable" || key === "draggable" || key.startsWith("data-")) {
                   el.removeAttribute(attr.name);
                 }
-                if ((k === "href" || k === "src") && (v.startsWith("javascript:") || v.startsWith("data:"))) {
+                if ((key === "href" || key === "src") && (val.startsWith("javascript:") || val.startsWith("data:"))) {
                   el.removeAttribute(attr.name);
                 }
               });
               if (!allowed.has(el.tagName)) {
-                const p = el.parentNode;
-                while (el.firstChild) p.insertBefore(el.firstChild, el);
-                p.removeChild(el);
+                const parent = el.parentNode;
+                while (el.firstChild) parent.insertBefore(el.firstChild, el);
+                parent.removeChild(el);
               }
             });
 
-            // === 2-4) 구조 보정: 헤딩 강등 + 고아 li 래핑 + 빈 태그 정리 ===
-
-            // 본문에서는 h1/h2를 h3로 강등 (제목 <h2>는 card-head 쪽이 담당)
+            // === 구조 보정: 헤딩 강등 + 고아 li 래핑 + 빈 태그 정리 ===
             (function demoteHeadings(root) {
               root.querySelectorAll("h1,h2").forEach(h => {
                 const h3 = document.createElement("h3");
                 h3.innerHTML = h.innerHTML;
-                // 기존 id/class는 유지(원하면 제거 가능)
                 [...h.attributes].forEach(a => h3.setAttribute(a.name, a.value));
                 h.replaceWith(h3);
               });
             })(divTmp);
 
-            // 고아 <li>들을 인접 구간별로 <ul>로 감싸기
             (function normalizeOrphanLis(root) {
-              const lis = Array.from(root.querySelectorAll("li")).filter(li => {
+              const orphanLis = Array.from(root.querySelectorAll("li")).filter(li => {
                 const p = li.parentElement;
                 return !(p && (p.tagName === "UL" || p.tagName === "OL"));
               });
-              if (!lis.length) return;
+              if (!orphanLis.length) return;
 
               let run = [];
               const flush = () => {
@@ -568,12 +786,11 @@ function enhanceBlocks() {
                 run = [];
               };
 
-              // 문서 순서대로 그룹핑
-              const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
-              let node;
-              while ((node = walker.nextNode())) {
-                if (node.tagName === "LI" && lis.includes(node)) {
-                  run.push(node);
+              const tree = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
+              let cursor;
+              while ((cursor = tree.nextNode())) {
+                if (cursor.tagName === "LI" && orphanLis.includes(cursor)) {
+                  run.push(cursor);
                 } else if (run.length) {
                   flush();
                 }
@@ -581,7 +798,6 @@ function enhanceBlocks() {
               flush();
             })(divTmp);
 
-            // 빈/무의미 태그 정리: 비어있는 p/div/span 등 제거 (img, br는 보존)
             (function pruneEmpty(root) {
               root.querySelectorAll("p,div,span,figure,figcaption").forEach(el => {
                 const html = (el.innerHTML || "").trim();
@@ -595,8 +811,8 @@ function enhanceBlocks() {
             return;
           }
           // 2-C) 그 외 평문은 기본 동작
-        } catch (err) {
-          console.warn("paste handler error", err);
+        } catch (pasteErr) {
+          console.warn("paste handler error", pasteErr);
         }
       });
       inner.__pasteWired = true;
@@ -632,9 +848,9 @@ function enhanceBlocks() {
         inner.classList.remove("editable");
         btnEditOne.disabled = false;
         btnSaveOne.disabled = true;
-      } catch (e) {
-        console.error(e);
-        showStatus({ level: "error", title: "저장 실패", lines: [String(e?.message || e)] });
+      } catch (exc) {
+        console.error(exc);
+        showStatus({ level: "error", title: "저장 실패", lines: [String(exc?.message || exc)] });
         btnSaveOne.disabled = false;
       }
     };
@@ -645,15 +861,15 @@ function enhanceBlocks() {
       btnThumb.disabled = true;
       showStatus({ level: "warn", title: "썸네일 갱신 중…", lines: [`${folder}`] });
       try {
-        const r = await call("refresh_thumb", folder, 640);
-        if (r?.ok) {
+        const result = await call("refresh_thumb", folder, 640);
+        if (result?.ok) {
           showStatus({ level: "ok", title: "썸네일 갱신 완료", lines: [folder], autoHideMs: 1800 });
         } else {
-          const hint = r?.error ? [r.error] : ["소스 이미지 없음 또는 변환 실패"];
+          const hint = result?.error ? [result.error] : ["소스 이미지 없음 또는 변환 실패"];
           showStatus({ level: "error", title: "썸네일 갱신 실패", lines: [folder], errors: hint });
         }
-      } catch (e) {
-        showStatus({ level: "error", title: "썸네일 갱신 예외", lines: [folder], errors: [String(e?.message || e)] });
+      } catch (exc) {
+        showStatus({ level: "error", title: "썸네일 갱신 예외", lines: [folder], errors: [String(exc?.message || exc)] });
       } finally {
         btnThumb.disabled = false;
       }
@@ -665,9 +881,9 @@ function enhanceBlocks() {
 
 // 저장 직렬화: h2 + thumb-wrap + inner(본문)만 남기고, 버튼/편집속성 제거
 function serializeMaster() {
-  const root = document.querySelector("#content").cloneNode(true);
+  const rootClone = document.querySelector("#content").cloneNode(true);
 
-  root.querySelectorAll(".card").forEach(div => {
+  rootClone.querySelectorAll(".card").forEach(div => {
     const head = div.querySelector(".card-head");
     const inner = div.querySelector(".inner");
     if (!head || !inner) return;
@@ -676,7 +892,23 @@ function serializeMaster() {
     const thumbWrapEl = div.querySelector(".thumb-wrap");
 
     const clean = document.createElement("div");
-    clean.className = "card";
+    // --- 메타 클래스를 보존하여 저장 (is-hidden/delete-intent-hard/is-locked)
+    const metaClasses = [];
+    if (div.classList.contains("is-hidden")) metaClasses.push("is-hidden");
+    if (div.classList.contains("is-locked")) metaClasses.push("is-locked");
+    clean.className = ["card", ...metaClasses].join(" ");
+
+    // --- P3-2: 기존 data-* 메타 보존 ---
+    [
+      "data-card",
+      "data-card-id",
+      "data-hidden",
+      "data-order",
+      "data-created-at",
+    ].forEach(attr => {
+      const val = div.getAttribute(attr);
+      if (val !== null && val !== "") clean.setAttribute(attr, val);
+    });
 
     // h2 (편집 제외)
     const h2 = document.createElement("h2");
@@ -706,245 +938,8 @@ function serializeMaster() {
   });
 
   // 버튼/툴바 제거, 잔여 편집 속성 제거
-  root.querySelectorAll(".card-actions, button.btn").forEach(el => el.remove());
-  root.querySelectorAll("[contenteditable]").forEach(el => el.removeAttribute("contenteditable"));
+  rootClone.querySelectorAll(".card-actions, button.btn").forEach(el => el.remove());
+  rootClone.querySelectorAll("[contenteditable]").forEach(el => el.removeAttribute("contenteditable"));
 
-  return root.innerHTML;
-}
-
-function wireGlobalToolbar() {
-  if (_toolbarWired) return;
-  _toolbarWired = true;
-
-  const btnSync = $("#btnSync");
-  const btnRebuild = $("#btnRebuild");
-  const btnRegenAll = $("#btnRegenAll");
-
-  // 선택적: 전역 편집/저장 버튼이 있는 경우 동일한 UX 적용
-  const btnEditAll = $("#btnEdit");     // 존재하면 전역 편집 시작
-  const btnSaveAll = $("#btnSaveAll");  // 존재하면 전역 저장
-
-  // ---- PRUNE: 드라이런 / 적용 ----
-  const btnPruneDryRun = $("#btnPruneDryRun");
-  const btnPruneApply = $("#btnPruneApply");
-  const chkPruneDeleteThumbs = $("#chkPruneDeleteThumbs"); // optional
-
-  // ---- 필수 툴바(있을 때만) ----
-  if (btnSync) {
-    btnSync.addEventListener("click", async () => {
-      if (!hasBridge) return alert("데스크톱 앱에서 실행하세요.");
-      btnSync.disabled = true;
-
-      // 진행중 표시
-      showStatus({ level: "warn", title: "동기화 중…", lines: ["잠시만 기다려주세요."] });
-
-      try {
-        const r = await call("sync");       // {ok, scanOk, pushOk, errors, metrics}
-        await loadMaster();                 // 최신 내용 다시 로드 (상태바는 유지됨)
-        renderSyncResult(r);                // 상태바 업데이트
-      } catch (e) {
-        console.error(e);
-        showStatus({
-          level: "error",
-          title: "동기화 호출 실패",
-          lines: [String(e?.message || e)]
-        });
-      } finally {
-        btnSync.disabled = false;
-      }
-    });
-  }
-
-  if (btnRebuild) {
-    btnRebuild.addEventListener("click", async () => {
-      if (!hasBridge) return alert("데스크톱 앱에서 실행하세요.");
-      btnRebuild.disabled = true;
-      try {
-        await call("rebuild_master");
-        await loadMaster();
-        alert("마스터 재생성 완료");
-      } catch (e) {
-        console.error(e); alert("실패");
-      } finally {
-        btnRebuild.disabled = false;
-      }
-    });
-  }
-
-  if (btnRegenAll) {
-    btnRegenAll.addEventListener("click", async () => {
-      if (!hasBridge) return alert("데스크톱 앱에서 실행하세요.");
-      btnRegenAll.disabled = true;
-      try {
-        const names = $$(".card").map(div => div.getAttribute("data-card") || $("h2", div)?.textContent.trim());
-        for (const name of names) {
-          await call("refresh_thumb", name, 640);
-        }
-        alert("썸네일 일괄 갱신 완료");
-      } catch (e) {
-        console.error(e); alert("실패");
-      } finally {
-        btnRegenAll.disabled = false;
-      }
-    });
-  }
-
-  // ---- 전역 편집/저장(선택적) ----
-  if (btnEditAll && btnSaveAll) {
-    // 기본 상태: 편집 꺼짐, [편집] 활성 / [저장] 비활성
-    btnEditAll.disabled = false;
-    btnSaveAll.disabled = true;
-
-    btnEditAll.addEventListener("click", () => {
-      if (!hasBridge) return alert("편집은 데스크톱 앱에서만 가능합니다.");
-      // 모든 카드의 .inner 편집 시작
-      $$(".card .inner").forEach(inner => {
-        inner.contentEditable = "true";
-        inner.classList.add("editable");
-      });
-      btnEditAll.disabled = true;
-      btnSaveAll.disabled = false;
-    });
-
-    btnSaveAll.addEventListener("click", async () => {
-      if (!hasBridge) return;
-      btnSaveAll.disabled = true;
-      try {
-        // ✅ 저장 직전 보정
-        $$(".card .inner").forEach(el => { autoLinkify(el); decorateExternalLinks(el); });
-
-        await call("save_master", serializeMaster());
-        await loadMaster(); // 저장된 내용으로 즉시 재로딩(렌더 상태 확인)
-        showStatus({ level: "ok", title: "전체 저장 완료", autoHideMs: 2000 });
-        // 편집 종료
-        $$(".card .inner").forEach(inner => {
-          inner.contentEditable = "false";
-          inner.classList.remove("editable");
-        });
-        btnEditAll.disabled = false;
-        btnSaveAll.disabled = true;
-      } catch (e) {
-        console.error(e);
-        showStatus({ level: "error", title: "저장 실패", lines: [String(e?.message || e)] });
-        btnSaveAll.disabled = false;
-      }
-    });
-  }
-
-  if (btnPruneDryRun) {
-    btnPruneDryRun.addEventListener("click", async () => {
-      if (!hasBridge) return alert("데스크톱 앱에서 실행하세요.");
-      btnPruneDryRun.disabled = true;
-      showStatus({ level: "warn", title: "프룬 점검 중…", lines: ["리포트 생성"] });
-      try {
-        // 백엔드: MasterApi.diff_and_report(include_thumbs=True)
-        const rep = await call("diff_and_report");
-        window._lastPruneReport = rep;  // 적용 전 재사용
-        const lines = renderPruneReport(rep);
-        showStatus({
-          level: "ok",
-          title: "프룬 드라이런 완료",
-          lines
-        });
-      } catch (e) {
-        console.error(e);
-        showStatus({
-          level: "error",
-          title: "프룬 드라이런 실패",
-          lines: [String(e?.message || e)]
-        });
-      } finally {
-        btnPruneDryRun.disabled = false;
-      }
-    });
-  }
-
-  if (btnPruneApply) {
-    btnPruneApply.addEventListener("click", async () => {
-      if (!hasBridge) return alert("데스크톱 앱에서 실행하세요.");
-      btnPruneApply.disabled = true;
-
-      try {
-        // 1) 최신 리포트 확보(없으면 즉시 생성)
-        let rep = window._lastPruneReport;
-        if (!rep) rep = await call("diff_and_report");
-        const lines = renderPruneReport(rep);
-
-        // 2) 사용자 확인(UI에 라이트하게 요약도 표시)
-        const cnt = (rep.folders_missing_in_fs?.length ?? 0);
-        const thumbsCnt = (rep.thumbs_orphans?.length ?? 0);
-        const wantDeleteThumbs = !!(chkPruneDeleteThumbs && chkPruneDeleteThumbs.checked);
-
-        const ok = confirm(
-          [
-            "프룬을 적용합니다.",
-            `- master_content에서 제거: ${cnt}건`,
-            wantDeleteThumbs ? `- 고아 썸네일 삭제: ${thumbsCnt}개` : "- 고아 썸네일은 유지",
-            "",
-            "진행할까요?",
-          ].join("\n")
-        );
-        if (!ok) { btnPruneApply.disabled = false; return; }
-
-        showStatus({ level: "warn", title: "프룬 적용 중…", lines });
-
-        // 3) 적용 호출
-        // 백엔드 시그니처: prune_apply(report=None, *, delete_thumbs=False)
-        // → JS에선 report를 넘기면 1번째 위치인자로 매핑됨.
-        // (delete_thumbs 토글은 아래 주석 참고)
-        const result = await call("prune_apply", null, wantDeleteThumbs);
-
-        // 4) 적용 결과 표기 + 화면 갱신
-        const post = [
-          `master 제거: ${result?.removed_from_master ?? 0}건`,
-          `child 재생성: ${result?.child_built ?? 0}건`,
-        ];
-        if (typeof result?.thumbs_deleted === "number") {
-          post.push(`썸네일 삭제: ${result.thumbs_deleted}개`);
-        }
-        await loadMaster();
-        showStatus({ level: "ok", title: "프룬 적용 완료", lines: post });
-
-      } catch (e) {
-        console.error(e);
-        showStatus({
-          level: "error",
-          title: "프룬 적용 실패",
-          lines: [String(e?.message || e)]
-        });
-      } finally {
-        btnPruneApply.disabled = false;
-      }
-    });
-  }
-}
-
-// --- prune report renderer ---
-function renderPruneReport(rep) {
-  if (!rep) return ["리포트 없음"];
-  const s = rep.summary || {};
-  const lines = [];
-  lines.push(
-    `FS 폴더: ${s.fs_slugs ?? "-"}, MasterContent: ${s.master_content_slugs ?? "-"}, MasterIndex: ${s.master_index_slugs ?? "-"}`
-  );
-  lines.push(
-    `프룬 대상(missing_in_fs): ${rep.folders_missing_in_fs?.length ?? 0}건`
-  );
-  if (rep.folders_missing_in_fs?.length) {
-    lines.push(" - " + rep.folders_missing_in_fs.join(", "));
-  }
-  if (rep.child_indexes_missing?.length) {
-    lines.push(`child index 누락: ${rep.child_indexes_missing.length}건`);
-    lines.push(" - " + rep.child_indexes_missing.join(", "));
-  }
-  if (rep.orphans_in_master_index_only?.length) {
-    lines.push(`master_index 단독 고아: ${rep.orphans_in_master_index_only.length}건`);
-    lines.push(" - " + rep.orphans_in_master_index_only.join(", "));
-  }
-  if (rep.thumbs_orphans?.length) {
-    const n = rep.thumbs_orphans.length;
-    lines.push(`고아 썸네일 파일: ${n}개${n > 8 ? " (상세 생략)" : ""}`);
-    if (n <= 8) lines.push(" - " + rep.thumbs_orphans.join(", "));
-  }
-  return lines;
+  return rootClone.innerHTML;
 }

@@ -1,5 +1,7 @@
 import os, io, tempfile
 
+ID_FILENAME = ".suksukidx.id"
+
 
 def _fsync_dir(dir_path: str) -> None:
     try:
@@ -77,3 +79,27 @@ def atomic_write_text(
         except OSError:
             pass
         raise
+
+
+# ---- 카드 ID 유틸 (P3-1) ----
+def read_card_id(dir_path: str) -> str | None:
+    """
+    resource/<folder>/.suksukidx.id 내용을 읽어 카드 ID(UUID)를 반환.
+    파일이 없거나 비어 있으면 None.
+    """
+    path = os.path.join(dir_path, ID_FILENAME)
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            val = f.read().strip()
+            return val or None
+    except OSError:
+        return None
+
+
+def write_card_id(dir_path: str, card_id: str) -> None:
+    """resource/<folder>/.suksukidx.id 에 카드 ID를 원자적으로 기록."""
+    dst = os.path.join(dir_path, ID_FILENAME)
+    # 개행은 한 줄만 보장
+    atomic_write_text(dst, card_id.strip() + "\n", encoding="utf-8", newline="\n")

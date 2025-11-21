@@ -1,15 +1,27 @@
 from pathlib import Path
 from bs4 import BeautifulSoup
 from typing import Dict, Any, List, Optional
+from typing import Tuple
 import os
 import hashlib
 import shutil
+import uuid
 
 try:
     from .constants import PUBLISH_CSS, CSS_PREFIX
 except Exception:
     PUBLISH_CSS = "backend/ui/publish.css"
     CSS_PREFIX = "master"
+
+try:
+    # P3-1: 카드 ID 파일 헬퍼
+    from .fsutil import read_card_id, write_card_id
+except Exception:
+    try:
+        from fsutil import read_card_id, write_card_id
+    except Exception:
+        read_card_id = None
+        write_card_id = None
 
 TOOLBAR_HTML = """
 <div class="card-actions">
@@ -44,6 +56,66 @@ def run_sync_all(resource_dir: Path, thumb_width: int = 640, *, scan_only: bool 
         print(f"❌ internal thumbnail scan failed: {e}")
         return 1
 
+# ---------- 카드 ID 보장 (P3-1) ----------
+def ensure_card_ids(resource_dir: Path) -> dict[str, str]:
+    """
+    resource/ 하위 카드 폴더에 .suksukidx.id 를 보장하고,
+    {folder_name: card_id} 매핑을 반환한다.
+
+    - 숨김 폴더(. 시작)와 'thumbs' 폴더는 제외
+    - 중복 ID가 발견되면 후순위 폴더에 새 UUID를 발급하여 충돌을 해소
+    """
+    if read_card_id is None or write_card_id is None:
+        # 헬퍼를 사용할 수 없는 환경에서는 조용히 폴백(이행기 대비)
+        # 호출 측에서 이 경우 ID 의존 로직을 건너뛸 수 있다.
+        return {}
+
+    folder_to_id: dict[str, str] = {}
+    used_ids: dict[str, str] = {}
+
+    try:
+        entries = sorted(
+            [p for p in resource_dir.iterdir() if p.is_dir() and not p.name.startswith(".")],
+            key=lambda p: p.name,
+        )
+    except Exception as e:
+        print(f"[id] WARN: failed to list resource dir for ids: {e}")
+        return {}
+
+    for d in entries:
+        if d.name.lower() == "thumbs":
+            continue
+        
+        dir_str = str(d)
+        cid = read_card_id(dir_str)
+
+        if not cid:
+            cid = str(uuid.uuid4())
+            try:
+                write_card_id(dir_str, cid)
+                print(f"[id] create {d.name} -> {cid}")
+            except Exception as e:
+                print(f"[id] WARN: failed to write id for {d.name}: {e}")
+                continue
+            
+        # 중복 ID 해소: 이미 사용 중이면 새로 발급
+        if cid in used_ids and used_ids[cid] != d.name:
+            new_cid = str(uuid.uuid4())
+            try:
+                write_card_id(dir_str, new_cid)
+                print(
+                    f"[id] duplicate detected for {d.name} (old:{cid}); "
+                    f"reassigned -> {new_cid}"
+                )
+                cid = new_cid
+            except Exception as e:
+                print(f"[id] WARN: failed to fix duplicate id for {d.name}: {e}")
+                continue
+            
+        used_ids[cid] = d.name
+        folder_to_id[d.name] = cid
+
+    return folder_to_id
 
 def _make_slug(name: str) -> str:
     """
@@ -215,15 +287,52 @@ def ensure_css_assets(resource_dir: Path) -> str:
     return basename
 # ----------------------------------------
 
+def _meta_from_dict(d: Dict[str, Any]) -> Tuple[Optional[bool], Optional[int], Optional[bool], Optional[str]]:
+    """folders 요소(dict)에서 (hidden, order, locked, delete_intent) 안전 추출"""
+    hidden = d.get("hidden", None)
+    if isinstance(hidden, str):
+        hidden = hidden.lower() == "true"
+    elif hidden is not None:
+        hidden = bool(hidden)
+
+    order = d.get("order", None)
+    try:
+        order = int(order) if order is not None and str(order).strip() != "" else None
+    except Exception:
+        order = None
+
+    locked = d.get("locked", None)
+    if isinstance(locked, str):
+        locked = locked.lower() == "true"
+    elif locked is not None:
+        locked = bool(locked)
+
+    delete_intent = d.get("delete_intent") or d.get("deleteIntent") or None
+    if delete_intent not in (None, "hard"):
+        delete_intent = None
+    return hidden, order, locked, delete_intent
+
+def _classes_for_meta(hidden: Optional[bool], locked: Optional[bool], delete_intent: Optional[str]) -> str:
+    classes = []
+    if hidden: classes.append("is-hidden")
+    if locked: classes.append("is-locked")
+    if delete_intent == "hard": classes.append("delete-intent-hard")
+    return (" " + " ".join(classes)) if classes else ""
 
 def _card_block_html(
     title: str,
     inner_html: str,
     thumb_src: str | None = None,
     *,
+    card_id: str | None = None,
+    hidden: Optional[bool] = None,
+    order: Optional[int] = None,
+    locked: Optional[bool] = None,
+    delete_intent: Optional[str] = None,
     include_toolbar: bool = False,
     editable: bool = False,
 ) -> str:
+    meta_cls = _classes_for_meta(hidden, locked, delete_intent)
     toolbar = TOOLBAR_HTML if include_toolbar else ""
     # 빈 thumb-wrap 제거: 썸네일 있을 때만 출력
     thumb_wrap = (
@@ -232,8 +341,13 @@ def _card_block_html(
     )
     editable_attr = ' contenteditable="true"' if editable else ""
     editable_cls = " editable" if editable else ""
+    data_id_attr = f' data-card-id="{card_id}"' if card_id else ""
+    data_hidden = f' data-hidden="{str(bool(hidden)).lower()}"' if hidden is not None else ""
+    data_locked = f' data-locked="{str(bool(locked)).lower()}"' if locked is not None else ""
+    data_order  = f' data-order="{order}"' if isinstance(order, int) else ""
+    data_delint = f' data-delete-intent="hard"' if delete_intent == "hard" else ""
     return f"""
-<div class="card" data-card="{title}">
+<div class="card{meta_cls}" data-card="{title}"{data_id_attr}{data_hidden}{data_order}{data_locked}{data_delint}>
   <div class="card-head">
     <h2>{title}</h2>
     {toolbar}
@@ -252,18 +366,30 @@ def render_master_index(folders: list[dict], *, css_basename: str = "master.css"
     - 툴바/편집 속성 없음(배포 캐시에는 편집 UI가 없어야 함)
     - CSS 링크는 css_basename 사용 (예: master.<HASH>.css)
     """
-    blocks = []
+    # 정렬은 호출 측(MasterApi._push_master_to_resource)이 책임지고,
+    # 여기서는 전달받은 순서를 그대로 사용한다(SSOT = master_content 순서).
+    blocks: List[str] = []
     for f in folders:
+        card_id = f.get("id") or f.get("card_id")
+        hidden, order, locked, delete_intent = _meta_from_dict(f)
+
+        if hidden:
+            continue
+        
         blocks.append(
             _card_block_html(
                 title=f.get("title", ""),
                 inner_html=f.get("html", ""),
                 thumb_src=f.get("thumb"),
-                include_toolbar=False,  # 배포 캐시에선 제거
-                editable=False,         # 배포 캐시에선 제거
-            )
-        )
-
+                card_id=card_id,
+                hidden=hidden,
+                order=order,
+                locked=locked,
+                delete_intent=delete_intent,
+                include_toolbar=False,
+                editable=False,
+             )
+         )
     html = f"""
 <!DOCTYPE html>
 <html lang="ko">
@@ -283,12 +409,20 @@ def render_master_index(folders: list[dict], *, css_basename: str = "master.css"
     return dedupe_toolbar(html, mode="child")
 
 
-def render_child_index(title: str, html_body: str, thumb_src: str | None, *, css_basename: str = "master.css") -> str:
-    # 배포용 child 페이지 또한 편집 UI가 없어야 하므로 include_toolbar=False
+def render_child_index(
+    title: str,
+    html_body: str,
+    thumb_src: str | None,
+    *,
+    css_basename: str = "master.css",
+    card_id: str | None = None,
+) -> str:
+    # child는 메타 표시가 필수는 아니나, 디버깅 편의를 위해 최소한 data-card-id만 유지
     block = _card_block_html(
         title=title,
         inner_html=html_body,
         thumb_src=thumb_src,
+        card_id=card_id,
         include_toolbar=False,
         editable=False,
     )

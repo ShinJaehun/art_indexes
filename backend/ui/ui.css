@@ -1,5 +1,21 @@
 /* backend/ui/ui.css — editor-only tweaks */
 
+/* 전체 레이아웃: 위쪽 헤더는 고정, #content만 스크롤 */
+html, body {
+  height: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+}
+
+/* 카드/본문 영역만 세로 스크롤 */
+#content {
+  flex: 1;
+  overflow-y: auto;
+}
+
 /* 편집기 전용 안내 문구 여백/톤 조정 */
 .readonly-note { opacity:.9; }
 
@@ -13,3 +29,20 @@
 
 /* 브리지 연결 시 툴바 보이기(보통 JS에서 처리하지만, 안전망 겸) */
 .has-bridge #globalToolbar { visibility: visible; }
+
+
+/* 정렬 컨트롤 레이아웃 */
+.sort-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: .75rem;
+  font-size: 14px;
+}
+
+/* 카드 헤더에서 날짜 등 메타 표시 */
+.card-meta {
+  font-size: 0.8em;
+  opacity: 0.7;
+  margin-left: .5rem;
+}

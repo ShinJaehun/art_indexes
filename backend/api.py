@@ -4,6 +4,8 @@ import re
 import time
 import os
 import traceback
+import shutil
+from datetime import datetime
 
 try:
     from .fsutil import atomic_write_text
@@ -230,7 +232,11 @@ class MasterApi:
         return {"html": ""}
 
     def save_master(self, html: str) -> Dict[str, Any]:
-        """편집 저장: master_content.html만 갱신(사용자 작성 HTML 그대로 저장)"""
+        """
+        편집 저장:
+        - master_content.html 저장
+        - 곧바로 master_index / child index까지 재빌드(_push_master_to_resource)
+        """
         if "<h2>" not in html and "&lt;h2&gt;" in html:
             print("[save_master] WARN: incoming HTML is already escaped")
 
@@ -254,8 +260,24 @@ class MasterApi:
 
             fixed_html = str(soup)
 
+        # 1) master_content 저장
         self._write(self._p_master_content(), fixed_html)
-        return {"ok": True}
+
+        # 2) 파생물(master_index + child index) 재빌드
+        errors: List[str] = []
+        blocks: Optional[int] = None
+        try:
+            blocks = self._push_master_to_resource()
+        except Exception as exc:
+            msg = f"_push_master_to_resource 실패: {exc}"
+            print(f"[save_master] {msg}")
+            errors.append(msg)
+
+        return {
+            "ok": not errors,
+            "blocks": blocks,
+            "errors": errors or None,
+        }
 
     # --- 카드 정렬 키 (중첩함수 제거 → 클래스 메서드) ---
     def _card_sort_key(self, card: Dict[str, Any]) -> Tuple[int, str]:
@@ -318,6 +340,26 @@ class MasterApi:
                 continue
             block_count += 1
 
+            # --- 생성 시각 메타 보완: 없으면 폴더 mtime 기준으로 채움 ---
+            if not card_div.get("data-created-at"):
+                created_at: Optional[str] = None
+                folder_path = resource_dir / card_title
+                try:
+                    if folder_path.exists() and folder_path.is_dir():
+                        ts = folder_path.stat().st_mtime
+                        dt = datetime.fromtimestamp(ts).astimezone()
+                        created_at = dt.isoformat(timespec="seconds")
+                except Exception:
+                    created_at = None
+                if created_at is None:
+                    try:
+                        dt = datetime.now().astimezone()
+                        created_at = dt.isoformat(timespec="seconds")
+                    except Exception:
+                        created_at = None
+                if created_at:
+                    card_div["data-created-at"] = created_at
+
             # --- P3-2: 메타 읽기 ---
             def _as_bool(value: Any) -> Optional[bool]:
                 if value is None:
@@ -328,9 +370,7 @@ class MasterApi:
 
             meta_hidden = _as_bool(card_div.get("data-hidden"))
             meta_locked = _as_bool(card_div.get("data-locked"))
-            meta_delete_intent = (
-                card_div.get("data-delete-intent") or ""
-            ).strip().lower() or None
+
             try:
                 meta_order = (
                     int(card_div.get("data-order"))
@@ -346,8 +386,6 @@ class MasterApi:
 
             if meta_hidden:
                 hidden_count += 1
-            if meta_delete_intent == "hard":
-                delete_intent_count += 1
 
             # P3-1: 제목(=폴더명 가정)으로 card_id 주입
             card_id = folder_id_map.get(card_title)
@@ -418,7 +456,6 @@ class MasterApi:
                         "hidden": meta_hidden,
                         "order": meta_order,
                         "locked": meta_locked,
-                        "delete_intent": meta_delete_intent,
                     }
                 )
 
@@ -426,9 +463,7 @@ class MasterApi:
         css_basename = ensure_css_assets(resource_dir)  # e.g., master.<HASH>.css
 
         # master/child 모두 최종 렌더 후 파일 기록
-        # master — P3-3: 정렬 규칙 적용 (hidden은 렌더러에서 걸러진다)
-        cards_for_master.sort(key=self._card_sort_key)
-
+        # master_index 순서는 master_content.html의 카드 등장 순서를 그대로 따른다
         master_html = render_master_index(cards_for_master, css_basename=css_basename)
         self._write(self._p_master_index(), master_html)
 
@@ -478,10 +513,8 @@ class MasterApi:
 
         print(f"[push] ok=True blocks={block_count} css={css_basename}")
 
-        if hidden_count or delete_intent_count:
-            print(
-                f"[push] meta: hidden={hidden_count}, delete-intent(hard)={delete_intent_count}"
-            )
+        if hidden_count:
+            print(f"[push] meta: hidden={hidden_count}")
         return block_count
 
     # ---- 동기화 ----
@@ -725,6 +758,21 @@ class MasterApi:
                 attrs={"class": "card", "data-card": name, "data-card-id": card_id},
             )
 
+            # 생성 시각 메타: 폴더 mtime 우선, 없으면 현재 시각
+            created_at: Optional[str] = None
+            try:
+                ts = folder.stat().st_mtime
+                dt = datetime.fromtimestamp(ts).astimezone()
+                created_at = dt.isoformat(timespec="seconds")
+            except Exception:
+                try:
+                    dt = datetime.now().astimezone()
+                    created_at = dt.isoformat(timespec="seconds")
+                except Exception:
+                    created_at = None
+            if created_at:
+                card_div["data-created-at"] = created_at
+
             head_div = soup.new_tag("div", attrs={"class": "card-head"})
             h2_tag = soup.new_tag("h2")
             h2_tag.string = name
@@ -765,6 +813,123 @@ class MasterApi:
         new_html = "\n\n".join(blocks) + ("\n" if blocks else "")
         self._write(self._p_master_content(), new_html)
         return {"ok": True, "added": len(blocks)}
+
+    # ---- 카드 삭제 (ID 기준, 즉시 삭제) ----
+    def delete_card_by_id(self, card_id: str) -> Dict[str, Any]:
+        """
+        data-card-id 기반으로 카드를 즉시 삭제한다.
+        - master_content.html에서 해당 .card 블록 제거
+        - resource/<folder> 폴더 삭제
+        - master_index.html / child index 재생성(_push_master_to_resource)
+
+        UI에서는 폴더/제목이 아니라 card_id(예: .suksukidx.id)를 넘겨야 한다.
+        """
+        if not card_id:
+            return {"ok": False, "error": "card_id가 비어 있습니다."}
+
+        if BeautifulSoup is None:
+            return {
+                "ok": False,
+                "error": "bs4(BeautifulSoup)가 필요합니다. `pip install beautifulsoup4` 후 다시 시도해 주세요.",
+            }
+
+        master_content = self._p_master_content()
+        html = self._read(master_content)
+        if not html.strip():
+            return {
+                "ok": False,
+                "error": "master_content.html이 비어 있거나 존재하지 않습니다.",
+            }
+
+        soup = BeautifulSoup(html, "html.parser")
+        target = soup.select_one(f'div.card[data-card-id="{card_id}"]')
+        if target is None:
+            return {
+                "ok": False,
+                "error": f"data-card-id={card_id} 카드를 찾을 수 없습니다.",
+            }
+
+        resource_dir = self._p_resource_dir()
+        folder_name: Optional[str] = None
+
+        # 1) .suksukidx.id → card_id 역매핑으로 폴더명 찾기(우선)
+        try:
+            folder_id_map = ensure_card_ids(resource_dir)
+        except Exception as exc:
+            folder_id_map = {}
+            print(f"[delete] WARN: ensure_card_ids failed in delete_card_by_id: {exc}")
+
+        if folder_id_map:
+            id_to_folder = {v: k for k, v in folder_id_map.items()}
+            folder_name = id_to_folder.get(card_id)
+
+        # 2) 폴더명을 찾지 못했다면 DOM 메타에서 폴더 후보 추출(폴백)
+        if not folder_name:
+            h = target.select_one(".card-head h2") or target.find("h2")
+            title = (h.get_text(strip=True) if h else "").strip()
+            data_card = (target.get("data-card") or "").strip()
+            data_folder = (target.get("data-folder") or "").strip()
+            for cand in (data_card, data_folder, title):
+                if cand:
+                    folder_name = cand
+                    break
+
+        errors: List[str] = []
+        deleted_folder = False
+        removed_from_master = False
+
+        # 3) 파일시스템 폴더 삭제
+        if folder_name:
+            folder_path = resource_dir / folder_name
+            try:
+                if folder_path.exists() and folder_path.is_dir():
+                    shutil.rmtree(folder_path)
+                    deleted_folder = True
+                else:
+                    print(
+                        f"[delete] WARN: folder not found or not a dir: {folder_path}"
+                    )
+            except Exception as exc:
+                msg = f"폴더 삭제 실패: {exc}"
+                print(f"[delete] {msg}")
+                errors.append(msg)
+        else:
+            msg = "폴더명을 결정할 수 없어 파일시스템 삭제를 건너뜁니다."
+            print(f"[delete] {msg}")
+            errors.append(msg)
+
+        # 4) master_content에서 카드 블록 제거
+        try:
+            target.decompose()
+            self._write(master_content, str(soup))
+            removed_from_master = True
+        except Exception as exc:
+            msg = f"master_content 카드 제거/저장 실패: {exc}"
+            print(f"[delete] {msg}")
+            errors.append(msg)
+
+        # 5) master_index / child index 재빌드
+        push_ok = True
+        try:
+            self._push_master_to_resource()
+        except Exception as exc:
+            push_ok = False
+            msg = f"인덱스 재생성(_push_master_to_resource) 실패: {exc}"
+            print(f"[delete] {msg}")
+            errors.append(msg)
+
+        ok = removed_from_master and push_ok and not errors
+        result: Dict[str, Any] = {
+            "ok": bool(ok),
+            "card_id": card_id,
+            "folder": folder_name,
+            "removed_from_master": removed_from_master,
+            "deleted_folder": deleted_folder,
+            "pushOk": push_ok,
+        }
+        if errors:
+            result["errors"] = errors
+        return result
 
     # ---- 썸네일 1건 ----
     def refresh_thumb(self, folder_name: str, width: int = 640) -> Dict[str, Any]:

@@ -1,5 +1,6 @@
 // 주의: 아래 전역에 의존합니다 — hasBridge, call, loadMaster, showStatus, renderSyncResult
 // master.js가 먼저 로드되고(Defer), 그 다음 이 파일이 로드되도록 index.html에서 순서가 잡혀있습니다.
+// Sync 버튼 자체는 master.js 쪽 wireGlobalToolbar에서만 담당합니다.
 
 let _toolbarWired = false;
 
@@ -34,11 +35,10 @@ function renderPruneReport(rep) {
 }
 
 
-function wireGlobalToolbar() {
+function wireExtraToolbar() {
   if (_toolbarWired) return;
   _toolbarWired = true;
 
-  const btnSync = $("#btnSync");
   const btnRebuild = $("#btnRebuild");
   const btnRegenAll = $("#btnRegenAll");
 
@@ -51,31 +51,9 @@ function wireGlobalToolbar() {
   const btnPruneApply = $("#btnPruneApply");
   const chkPruneDeleteThumbs = $("#chkPruneDeleteThumbs"); // optional
 
-  // ---- 필수 툴바(있을 때만) ----
-  if (btnSync) {
-    btnSync.addEventListener("click", async () => {
-      if (!hasBridge) return alert("데스크톱 앱에서 실행하세요.");
-      btnSync.disabled = true;
-
-      // 진행중 표시
-      showStatus({ level: "warn", title: "동기화 중…", lines: ["잠시만 기다려주세요."] });
-
-      try {
-        const r = await call("sync");       // {ok, scanOk, pushOk, errors, metrics}
-        await loadMaster();                 // 최신 내용 다시 로드 (상태바는 유지됨)
-        renderSyncResult(r);                // 상태바 업데이트
-      } catch (e) {
-        console.error(e);
-        showStatus({
-          level: "error",
-          title: "동기화 호출 실패",
-          lines: [String(e?.message || e)]
-        });
-      } finally {
-        btnSync.disabled = false;
-      }
-    });
-  }
+  const sortField = $("#sortField");
+  const btnSortAsc = $("#btnSortAsc");
+  const btnSortDesc = $("#btnSortDesc");
 
   if (btnRebuild) {
     btnRebuild.addEventListener("click", async () => {
@@ -239,4 +217,89 @@ function wireGlobalToolbar() {
       }
     });
   }
+
+  // ---- 정렬(생성순 / 이름순 + 오름/내림) ----
+  async function applySort(direction) {
+    if (!sortField) return;
+    const field = sortField.value || "created";
+
+    const container = $("#content") || document.body;
+    const cards = $$(".card", container);
+    if (!cards.length) return;
+
+    const getKey = (el) => {
+      if (field === "title") {
+        const title =
+          (el.getAttribute("data-card") ||
+            el.querySelector(".card-head h2")?.textContent ||
+            "").trim();
+        const miss = !title;
+        return [title.toLowerCase(), miss];
+      } else {
+        const created = (el.getAttribute("data-created-at") || "").trim();
+        const miss = !created;
+        return [created, miss];
+      }
+    };
+
+    cards.sort((a, b) => {
+      const [ak, amiss] = getKey(a);
+      const [bk, bmiss] = getKey(b);
+      if (amiss !== bmiss) return amiss - bmiss; // 메타 없는 카드 뒤로
+      const cmp = ak.localeCompare(bk);
+      return direction === "asc" ? cmp : -cmp;
+    });
+
+    cards.forEach((el) => container.appendChild(el));
+
+    // 브라우저 미리보기 모드: 화면 정렬만
+    if (!hasBridge) {
+      if (typeof showStatus === "function") {
+        const label = field === "title" ? "이름" : "생성";
+        showStatus({
+          level: "ok",
+          title: `정렬 완료 (${label} ${direction === "asc" ? "↑" : "↓"})`,
+        });
+      }
+      return;
+    }
+
+    // 데스크톱 앱: 정렬 상태를 master_content + master_index에 즉시 반영
+    try {
+      const label = field === "title" ? "이름" : "생성";
+      showStatus &&
+        showStatus({
+          level: "warn",
+          title: `정렬 후 저장 중… (${label} ${direction === "asc" ? "↑" : "↓"})`,
+        });
+      await call("save_master", serializeMaster());
+      await loadMaster();
+      showStatus &&
+        showStatus({
+          level: "ok",
+          title: `정렬 + 저장 완료 (${label} ${direction === "asc" ? "↑" : "↓"})`,
+          autoHideMs: 2500,
+        });
+    } catch (e) {
+      console.error(e);
+      showStatus &&
+        showStatus({
+          level: "error",
+          title: "정렬/저장 실패",
+          lines: [String(e?.message || e)],
+        });
+    }
+  }
+
+  if (sortField) {
+    if (btnSortAsc) {
+      btnSortAsc.addEventListener("click", () => applySort("asc"));
+    }
+    if (btnSortDesc) {
+      btnSortDesc.addEventListener("click", () => applySort("desc"));
+    }
+  }
 }
+
+// 전역으로 노출 (master.js에서 window.wireExtraToolbar()로 호출)
+window.wireExtraToolbar = wireExtraToolbar;

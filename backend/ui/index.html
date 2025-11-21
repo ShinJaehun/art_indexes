@@ -28,6 +28,19 @@
       <input type="checkbox" id="chkPruneDeleteThumbs">
       고아 썸네일 삭제
     </label>
+
+    <!-- 정렬 컨트롤 -->
+    <span class="sort-controls">
+      <label>
+        정렬:
+        <select id="sortField">
+          <option value="created">생성순</option>
+          <option value="title">이름순</option>
+        </select>
+      </label>
+      <button id="btnSortAsc" class="btn" title="오름차순">↑</button>
+      <button id="btnSortDesc" class="btn" title="내림차순">↓</button>
+    </span>
   </div>
 
   <!-- 마스터의 실제 콘텐츠가 여기에 로드됨 -->

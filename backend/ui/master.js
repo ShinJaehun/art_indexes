@@ -321,6 +321,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     enhanceBlocks();
     wireGlobalToolbar();
+
+    // 브라우저 미리보기 모드에서도 보조 툴바가 있다면 연결
+    if (typeof window.wireExtraToolbar === "function") {
+      window.wireExtraToolbar();
+    }
+
   } else {
     await loadMaster();
   }
@@ -401,29 +407,13 @@ function wireGlobalToolbar() {
     }
     try {
 
-      // 1) 삭제예약 확인(있으면 경고)
-      const delCards = $$(".card[data-delete-intent='hard']");
-      if (delCards.length > 0) {
-        const names = delCards.map(el => (el.getAttribute("data-card") || el.querySelector(".card-head h2")?.textContent || "").trim()).filter(Boolean);
-        const msg = [
-          `삭제 예약된 항목이 ${delCards.length}건 있습니다.`,
-          names.length ? `- ${names.join("\n- ")}` : "",
-          "",
-          "지금 Sync 하면 실제 폴더가 삭제됩니다. 계속할까요?"
-        ].join("\n");
-        if (!confirm(msg)) {
-          showStatus({ level: "warn", title: "동기화 취소됨(삭제 예약 미승인)" });
-          return;
-        }
-      }
-
-      // 2) 현재 화면 상태 저장
+      // 1) 현재 화면 상태 저장
       await call("save_master", serializeMaster());
-      // 3) 백엔드 동기화
+      // 2) 백엔드 동기화
       showStatus({ level: "warn", title: "동기화 중…" });
       const r = await call("sync");
       renderSyncResult(r);
-      // 4) 최신 상태 재로드
+      // 3) 최신 상태 재로드
       await loadMaster();
     } catch (e) {
       console.error(e);
@@ -450,7 +440,12 @@ async function loadMaster() {
     }
     enhanceBlocks();
     wireGlobalToolbar();
-    clearStatus();
+
+    // toolbar.js가 제공하는 보조 툴바 바인딩(재빌드/프룬 등)
+    if (typeof window.wireExtraToolbar === "function") {
+      window.wireExtraToolbar();
+    }
+
   } catch (exc) {
     console.error(exc);
     showStatus({ level: "error", title: "로드 실패", lines: [String(exc?.message || exc)] });
@@ -505,18 +500,30 @@ function enhanceBlocks() {
           <button class="btn btnSaveOne" disabled>저장</button>
           <button class="btn btnThumb">썸네일 갱신</button>
           <button class="btn btnToggleHidden">숨김</button>
-          <button class="btn btnToggleDelete">삭제예약</button>
-          <span class="orderBox" style="margin-left:.5rem">
-            <label style="font-size:.9em;opacity:.8">순서</label>
-            <input class="orderInput" type="number" step="1" style="width:6rem;margin:0 .25rem" />
-            <button class="btn btnOrderDown" title="순서 -10">-10</button>
-            <button class="btn btnOrderUp" title="순서 +10">+10</button>
-          </span>
+          <button class="btn btnToggleDelete">삭제</button>
         `;
       }
 
       if (h2) headEl.appendChild(h2);
+
+      // 기존 메타 라벨 제거 후, data-created-at 기반 생성일 표시
+      headEl.querySelectorAll(".card-meta").forEach(el => el.remove());
+      const cardEl = headEl.closest(".card");
+      const createdRaw = (cardEl?.getAttribute("data-created-at") || "").trim();
+      if (createdRaw) {
+        const metaSpan = document.createElement("span");
+        metaSpan.className = "card-meta";
+        // YYYY-MM-DD까지만 표시
+        metaSpan.textContent = createdRaw.slice(0, 10);
+        if (h2 && h2.parentNode === headEl) {
+          h2.insertAdjacentElement("afterend", metaSpan);
+        } else {
+          headEl.appendChild(metaSpan);
+        }
+      }
+
       headEl.appendChild(actions);
+
       if (thumbWrap) headEl.appendChild(thumbWrap);
       return { actions, thumbWrap };
     }
@@ -607,10 +614,7 @@ function enhanceBlocks() {
     const btnThumb = $(".btnThumb", actions);
 
     const btnToggleHidden = $(".btnToggleHidden", actions);
-    const btnToggleDelete = $(".btnToggleDelete", actions);
-    const orderInput = $(".orderInput", actions);
-    const btnOrderUp = $(".btnOrderUp", actions);
-    const btnOrderDown = $(".btnOrderDown", actions);
+    const btnDelete = $(".btnToggleDelete", actions);
 
     // --- P3-2: 숨김 토글 ---
     if (btnToggleHidden) {
@@ -626,55 +630,62 @@ function enhanceBlocks() {
       };
     }
 
-    // --- P3-2: 삭제예약 토글 ---
-    if (btnToggleDelete) {
-      btnToggleDelete.onclick = () => {
-        const curr = (div.getAttribute("data-delete-intent") || "").trim().toLowerCase();
-        const isOn = curr === "hard";
-        if (isOn) {
-          div.removeAttribute("data-delete-intent");
-          div.classList.remove("delete-intent-hard");
-          queueMetaSave();
-        } else {
-          div.setAttribute("data-delete-intent", "hard");
-          div.classList.add("delete-intent-hard");
-          queueMetaSave();
-        }
-      };
-    }
+    if (btnDelete) {
+      btnDelete.textContent = "삭제";
+      btnDelete.onclick = async () => {
+        if (!hasBridge) return alert("삭제는 데스크톱 앱에서만 가능합니다.");
 
-    // --- P3-3: 순서(data-order) 편집 ---
-    if (orderInput) {
-      const rawOrder = div.getAttribute("data-order");
-      orderInput.value = (rawOrder == null || rawOrder === "") ? "" : String(rawOrder);
-      orderInput.onchange = () => {
-        const v = orderInput.value.trim();
-        if (v === "") {
-          div.removeAttribute("data-order");
-          queueMetaSave();
-          return;
+        const cardId = div.getAttribute("data-card-id");
+        const cardTitle = (div.getAttribute("data-card") || title?.textContent || "").trim();
+
+        if (!cardId) {
+          return alert("card_id가 없어 삭제할 수 없습니다(동기화 후 다시 시도).");
         }
-        const parsed = Number(v);
-        if (Number.isFinite(parsed)) {
-          div.setAttribute("data-order", String(Math.trunc(parsed)));
-          orderInput.value = String(Math.trunc(parsed));
-        } else {
-          div.removeAttribute("data-order");
-          orderInput.value = "";
+
+        const ok = confirm(
+          `정말 삭제할까요?\n\n- 제목: ${cardTitle}\n- ID: ${cardId}\n\n폴더 및 자료가 영구 삭제됩니다.`
+        );
+        if (!ok) return;
+
+        try {
+          showStatus({ level: "warn", title: "삭제 중…", lines: [cardTitle] });
+
+          const r = await call("delete_card_by_id", cardId);
+          if (!r?.ok) {
+            const errs = [];
+            if (Array.isArray(r?.errors) && r.errors.length) {
+              errs.push(...r.errors);
+            } else if (r?.error) {
+              errs.push(r.error);
+            } else {
+              errs.push(`삭제 실패(card_id=${cardId})`);
+            }
+            showStatus({
+              level: "error",
+              title: "삭제 실패",
+              errors: errs,
+            });
+            return;
+          }
+
+          showStatus({
+            level: "ok",
+            title: "삭제 완료",
+            lines: [cardTitle],
+            autoHideMs: 4000,
+          });
+
+          await loadMaster();
+        } catch (exc) {
+          console.error(exc);
+          showStatus({
+            level: "error",
+            title: "삭제 예외",
+            errors: [String(exc?.message || exc)],
+          });
         }
-        queueMetaSave();
       };
     }
-    const applyOrderDelta = (delta) => {
-      let current = Number(div.getAttribute("data-order"));
-      if (!Number.isFinite(current)) current = 1000; // 기본값
-      current = Math.trunc(current + delta);
-      div.setAttribute("data-order", String(current));
-      if (orderInput) orderInput.value = String(current);
-      queueMetaSave();
-    };
-    if (btnOrderUp) btnOrderUp.onclick = () => applyOrderDelta(+10);
-    if (btnOrderDown) btnOrderDown.onclick = () => applyOrderDelta(-10);
 
     // --- 붙여넣기 핸들러 (중복 제거, escape 유틸 사용) ---
     if (inner && !inner.__pasteWired) {
@@ -884,7 +895,6 @@ function serializeMaster() {
     // --- 메타 클래스를 보존하여 저장 (is-hidden/delete-intent-hard/is-locked)
     const metaClasses = [];
     if (div.classList.contains("is-hidden")) metaClasses.push("is-hidden");
-    if (div.classList.contains("delete-intent-hard")) metaClasses.push("delete-intent-hard");
     if (div.classList.contains("is-locked")) metaClasses.push("is-locked");
     clean.className = ["card", ...metaClasses].join(" ");
 
@@ -894,7 +904,6 @@ function serializeMaster() {
       "data-card-id",
       "data-hidden",
       "data-order",
-      "data-delete-intent"
     ].forEach(attr => {
       const val = div.getAttribute(attr);
       if (val !== null && val !== "") clean.setAttribute(attr, val);

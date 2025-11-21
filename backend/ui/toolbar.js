@@ -227,27 +227,46 @@ function wireExtraToolbar() {
     const cards = $$(".card", container);
     if (!cards.length) return;
 
+    // --- 다중 키 정렬키 생성 ---
     const getKey = (el) => {
+      const title =
+        (el.getAttribute("data-card") ||
+          el.querySelector(".card-head h2")?.textContent ||
+          "").trim();
+      const titleLower = title.toLowerCase();
+      const created = (el.getAttribute("data-created-at") || "").trim();
+
+      const missTitle = !title;
+      const missCreated = !created;
+
       if (field === "title") {
-        const title =
-          (el.getAttribute("data-card") ||
-            el.querySelector(".card-head h2")?.textContent ||
-            "").trim();
-        const miss = !title;
-        return [title.toLowerCase(), miss];
+        // 이름순 → (제목, 생성일, 결측 여부)
+        return [titleLower, created, missTitle || missCreated];
       } else {
-        const created = (el.getAttribute("data-created-at") || "").trim();
-        const miss = !created;
-        return [created, miss];
+        // 생성순 → (생성일, 제목, 결측 여부)
+        return [created, titleLower, missCreated || missTitle];
       }
     };
 
     cards.sort((a, b) => {
-      const [ak, amiss] = getKey(a);
-      const [bk, bmiss] = getKey(b);
-      if (amiss !== bmiss) return amiss - bmiss; // 메타 없는 카드 뒤로
-      const cmp = ak.localeCompare(bk);
-      return direction === "asc" ? cmp : -cmp;
+      const akey = getKey(a);
+      const bkey = getKey(b);
+
+      // 3단계 키 비교
+      // key = [primary, secondary, miss]
+
+      // 1) primary 비교
+      let cmp = String(akey[0]).localeCompare(String(bkey[0]));
+      if (cmp !== 0) return direction === "asc" ? cmp : -cmp;
+
+      // 2) secondary 비교
+      cmp = String(akey[1]).localeCompare(String(bkey[1]));
+      if (cmp !== 0) return direction === "asc" ? cmp : -cmp;
+
+      // 3) 결측은 뒤로
+      const amiss = akey[2] ? 1 : 0;
+      const bmiss = bkey[2] ? 1 : 0;
+      return amiss - bmiss;
     });
 
     cards.forEach((el) => container.appendChild(el));

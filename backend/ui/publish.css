@@ -77,9 +77,11 @@ h1 { margin: 0 0 12px; }
   margin: 0;
 }
 
-/* P3-2: 숨김 시, 카드 전체는 흐림/그레이 처리하되 액션 바는 선명/클릭 가능 */
+/* 숨김 */
 .card.is-hidden {
   position: relative;
+  border: 2px dashed #d77;
+  background: rgba(255, 230, 230, 0.35);
 }
 
 /* 숨김 라벨 (배지) */
@@ -119,12 +121,6 @@ h1 { margin: 0 0 12px; }
 .card .inner,
 .card .thumb-wrap img {
   transition: filter .2s ease, opacity .2s ease;
-}
-
-/* P3-2: 삭제예약 표시 */
-.card.delete-intent-hard {
-  border: 2px dashed #d77;
-  background: rgba(255, 230, 230, 0.35);
 }
 
 /* 편집 중 하이라이트(선택 사항) */

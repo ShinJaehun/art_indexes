@@ -904,6 +904,7 @@ function serializeMaster() {
       "data-card-id",
       "data-hidden",
       "data-order",
+      "data-created-at",
     ].forEach(attr => {
       const val = div.getAttribute(attr);
       if (val !== null && val !== "") clean.setAttribute(attr, val);

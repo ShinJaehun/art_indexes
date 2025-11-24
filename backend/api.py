@@ -599,8 +599,12 @@ class MasterApi:
                         merged_html, added_count = self._ensure_cards_for_new_folders(
                             current_master_html
                         )
-                        if added_count > 0:
+
+                        # ✅ 내용이 실제로 바뀌었으면, 새 카드가 없더라도 저장
+                        if merged_html != current_master_html:
                             self._write(master_content_path, merged_html)
+
+                        if added_count > 0:
                             metrics["foldersAdded"] = added_count
                             print(f"[merge] added cards={added_count}")
                 except Exception as exc:
@@ -707,12 +711,20 @@ class MasterApi:
         master_content.html이 이미 존재하는 상태에서,
         resource/ 아래 새로 생긴 폴더에 대한 기본 카드 블럭을 생성해 붙인다.
 
+        + P3-3: 폴더 rename 지원
+          - .suksukidx.id(폴더) ↔ data-card-id(카드)를 매칭해서
+            같은 ID인데 폴더 이름과 카드 제목이 다르면 'rename'으로 간주하고
+            카드의 data-card / <h2> 텍스트를 새 폴더명으로 갱신한다.
+          - 같은 폴더명을 가진 중복 카드가 여러 개 있을 경우,
+            해당 ID를 가진 '주 카드'만 남기고 나머지 카드는 제거한다.
+
         반환값:
           (변경된_html, 추가된_카드_개수)
         """
         if BeautifulSoup is None:
             return master_html, 0
 
+        # 0) soup 준비
         if not master_html.strip():
             soup = BeautifulSoup("<div id='content'></div>", "html.parser")
         else:
@@ -720,39 +732,120 @@ class MasterApi:
 
         root_container = soup  # 카드들이 body 바로 아래에 있다고 가정
 
+        # 1) 기존 카드 메타 수집
         existing_names: set[str] = set()
+        id_to_card: dict[str, Any] = {}
+        name_to_cards: dict[str, list[Any]] = {}
+
         for card in root_container.find_all("div", class_="card"):
-            name_attr = card.get("data-card")
+            # 이름 우선순위: data-card → <h2> 텍스트
+            name_attr = (card.get("data-card") or "").strip()
+            if not name_attr:
+                h2_tag = card.select_one(".card-head h2") or card.find("h2")
+                if h2_tag:
+                    name_attr = (h2_tag.get_text(strip=True) or "").strip()
+
             if name_attr:
                 existing_names.add(name_attr)
+                name_to_cards.setdefault(name_attr, []).append(card)
+
+            cid = (card.get("data-card-id") or "").strip()
+            if cid:
+                id_to_card[cid] = card
 
         added_count = 0
-
         resource_dir = self._p_resource_dir()
-        for folder in sorted(resource_dir.iterdir()):
+
+        # 2) resource/ 폴더 스캔하면서
+        #    - 같은 ID의 카드가 있으면 rename 처리(+중복 카드 정리)
+        #    - 그렇지 않고 새 폴더명이면 새 카드 생성
+        for folder in sorted(resource_dir.iterdir(), key=lambda p: p.name):
             if not folder.is_dir():
                 continue
             name = folder.name
-            if name.startswith("."):
+            if name.startswith(".") or name.lower() == "thumbs":
                 continue
+
+            # 2-1) 폴더의 카드 ID 읽기 (.suksukidx.id)
+            card_id: Optional[str] = None
+            id_file = folder / ".suksukidx.id"
+            try:
+                if id_file.exists():
+                    val = id_file.read_text(encoding="utf-8").strip()
+                    card_id = val or None
+            except Exception:
+                card_id = None
+
+            # 2-2) ID 기준 rename 감지
+            #      - 폴더에는 card_id가 있고
+            #      - master_content 안에 같은 ID의 .card가 이미 있다면
+            #        → 그 카드를 이 폴더 이름으로 "이름 변경" 처리
+            if card_id and card_id in id_to_card:
+                card_el = id_to_card[card_id]
+
+                # 기존 이름(우선 data-card, 없으면 <h2>)
+                old_name = (card_el.get("data-card") or "").strip()
+                if not old_name:
+                    h2_tag = card_el.select_one(".card-head h2") or card_el.find("h2")
+                    if h2_tag:
+                        old_name = (h2_tag.get_text(strip=True) or "").strip()
+
+                # 이름이 다르면 rename 로그
+                if old_name != name:
+                    print(f"[id] rename detected: {old_name} -> {name} (id={card_id})")
+
+                # data-card / data-card-id / <h2> 를 새 폴더명으로 정렬
+                card_el["data-card"] = name
+                card_el["data-card-id"] = card_id
+
+                h2_tag = card_el.select_one(".card-head h2") or card_el.find("h2")
+                if h2_tag is not None:
+                    # 문자열 노드만 교체 (기존 children 보존)
+                    h2_tag.string = name
+
+                existing_names.add(name)
+
+                # name_to_cards 갱신 (새 이름으로 등록)
+                name_to_cards.setdefault(name, []).append(card_el)
+
+                # ★ 같은 이름인데 다른 ID를 가진 중복 카드 제거
+                dup_cards = [
+                    c
+                    for c in name_to_cards.get(name, [])
+                    if c is not card_el
+                    and (c.get("data-card-id") or "").strip() != card_id
+                ]
+                for dup in dup_cards:
+                    old_id = (dup.get("data-card-id") or "").strip()
+                    print(
+                        f"[id] remove duplicate card for folder '{name}' "
+                        f"(old_id={old_id}, keep_id={card_id})"
+                    )
+                    dup.decompose()
+
+                # 이 이름에 대해선 주 카드 하나만 남기도록 재정리
+                name_to_cards[name] = [card_el]
+
+                # 이 폴더는 카드가 이미 있으므로 추가 생성 X
+                continue
+
+            # 2-3) 이름 기준으로도 이미 카드가 있으면 스킵
             if name in existing_names:
                 continue
 
-            # .suksukidx.id에서 ID 읽기 (이미 builder에서 만들어 둠)
-            card_id = None
-            id_file = folder / ".suksukidx.id"
-            if id_file.exists():
-                card_id = id_file.read_text(encoding="utf-8").strip()
-
+            # 2-4) 여기까지 왔으면 "진짜 새 폴더" → 새 카드 생성
             if not card_id:
                 import uuid
 
                 card_id = str(uuid.uuid4())
 
-            # --- 카드 블럭 생성 ---
             card_div = soup.new_tag(
                 "div",
-                attrs={"class": "card", "data-card": name, "data-card-id": card_id},
+                attrs={
+                    "class": "card",
+                    "data-card": name,
+                    "data-card-id": card_id,
+                },
             )
 
             # 생성 시각 메타: 폴더 mtime 우선, 없으면 현재 시각
@@ -781,10 +874,9 @@ class MasterApi:
             card_div.append(inner_div)
 
             root_container.append(card_div)
+            existing_names.add(name)
+            name_to_cards.setdefault(name, []).append(card_div)
             added_count += 1
-
-        if not added_count:
-            return master_html, 0
 
         return str(soup), added_count
 

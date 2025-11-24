@@ -478,10 +478,6 @@ function enhanceBlocks() {
     // --- 초기 메타 표시: data-* → 클래스 반영 (재로드/Sync 후에도 시각 상태 유지)
     (function applyMetaFromData(el) {
       const hidden = (el.getAttribute("data-hidden") || "").trim().toLowerCase() === "true";
-      const delint = (el.getAttribute("data-delete-intent") || "").trim().toLowerCase() === "hard";
-      const locked = (el.getAttribute("data-locked") || "").trim().toLowerCase() === "true";
-      el.classList.toggle("delete-intent-hard", delint);
-      el.classList.toggle("is-locked", locked);
       // hidden은 버튼이 만들어진 뒤에 라벨까지 맞춰줘야 하므로 여기서는 클래스만 예비 반영(옵션)
       el.classList.toggle("is-hidden", hidden);
     })(div);
@@ -892,10 +888,9 @@ function serializeMaster() {
     const thumbWrapEl = div.querySelector(".thumb-wrap");
 
     const clean = document.createElement("div");
-    // --- 메타 클래스를 보존하여 저장 (is-hidden/delete-intent-hard/is-locked)
+    // --- 메타 클래스를 보존하여 저장 (is-hidden)
     const metaClasses = [];
     if (div.classList.contains("is-hidden")) metaClasses.push("is-hidden");
-    if (div.classList.contains("is-locked")) metaClasses.push("is-locked");
     clean.className = ["card", ...metaClasses].join(" ");
 
     // --- P3-2: 기존 data-* 메타 보존 ---

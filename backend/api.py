@@ -328,7 +328,6 @@ class MasterApi:
         cards_for_master: List[Dict[str, Any]] = []
 
         hidden_count = 0
-        delete_intent_count = 0
 
         for card_div in soup.find_all("div", class_="card"):
             heading = card_div.find("h2")
@@ -369,7 +368,6 @@ class MasterApi:
                 return bool(value)
 
             meta_hidden = _as_bool(card_div.get("data-hidden"))
-            meta_locked = _as_bool(card_div.get("data-locked"))
 
             try:
                 meta_order = (
@@ -455,7 +453,6 @@ class MasterApi:
                         "id": card_id,
                         "hidden": meta_hidden,
                         "order": meta_order,
-                        "locked": meta_locked,
                     }
                 )
 

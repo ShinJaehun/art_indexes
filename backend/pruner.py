@@ -6,8 +6,6 @@ from pathlib import Path
 import json
 import re
 import sys
-import os
-import shutil
 
 try:
     from .fsutil import atomic_write_text
@@ -425,37 +423,6 @@ class PruneApplier:
 
         soup = self._load_master_soup()
         removed = 0
-        hard_deleted = 0
-        hard_skipped_locked = 0
-
-        # 1-a) P3-2: delete-intent="hard" 처리 (locked면 스킵)
-        for div in list(soup.select("div.card")):
-            if (div.get("data-delete-intent") or "").strip().lower() != "hard":
-                continue
-            # locked 보호
-            if (div.get("data-locked") or "").strip().lower() == "true":
-                hard_skipped_locked += 1
-                continue
-            # 제목/슬러그 추출
-            h = div.select_one(".card-head h2") or div.find("h2")
-            slug = (h.get_text(strip=True) if h else "").strip()
-            if not slug:
-                # data-card/data-folder 후보
-                slug = (div.get("data-card") or div.get("data-folder") or "").strip()
-            if not slug:
-                continue
-            # FS 폴더 삭제 (안전 재귀)
-            target = self.resource_root / slug
-            try:
-                if target.exists() and target.is_dir():
-                    shutil.rmtree(target)
-                    hard_deleted += 1
-            except Exception:
-                # 실패해도 나머지 진행
-                pass
-            # master에서 즉시 제거 (추가 removed 카운트 포함)
-            div.decompose()
-            removed += 1
 
         # 2) master_content: folders_missing_in_fs 제거
         targets = set(report.folders_missing_in_fs)
@@ -550,8 +517,6 @@ class PruneApplier:
             "removed_from_master": removed,
             "child_built": child_built,
             "thumbs_deleted": thumbs_deleted,
-            "hard_deleted": hard_deleted,
-            "hard_skipped_locked": hard_skipped_locked,
         }
 
 
@@ -596,8 +561,6 @@ def _main(argv: List[str]) -> int:
         print(f"- removed_from_master: {result['removed_from_master']}")
         print(f"- child_built       : {result['child_built']}")
         print(f"- thumbs_deleted    : {result['thumbs_deleted']}")
-        print(f"- hard_deleted      : {result['hard_deleted']}")
-        print(f"- hard_skipped_locked: {result['hard_skipped_locked']}")
     else:
         if args.json:
             print(report.to_json())

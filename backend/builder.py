@@ -287,8 +287,8 @@ def ensure_css_assets(resource_dir: Path) -> str:
     return basename
 # ----------------------------------------
 
-def _meta_from_dict(d: Dict[str, Any]) -> Tuple[Optional[bool], Optional[int], Optional[bool], Optional[str]]:
-    """folders 요소(dict)에서 (hidden, order, locked, delete_intent) 안전 추출"""
+def _meta_from_dict(d: Dict[str, Any]) -> Tuple[Optional[bool], Optional[int]]:
+    """folders 요소(dict)에서 (hidden, order) 안전 추출"""
     hidden = d.get("hidden", None)
     if isinstance(hidden, str):
         hidden = hidden.lower() == "true"
@@ -301,22 +301,12 @@ def _meta_from_dict(d: Dict[str, Any]) -> Tuple[Optional[bool], Optional[int], O
     except Exception:
         order = None
 
-    locked = d.get("locked", None)
-    if isinstance(locked, str):
-        locked = locked.lower() == "true"
-    elif locked is not None:
-        locked = bool(locked)
+    return hidden, order
 
-    delete_intent = d.get("delete_intent") or d.get("deleteIntent") or None
-    if delete_intent not in (None, "hard"):
-        delete_intent = None
-    return hidden, order, locked, delete_intent
-
-def _classes_for_meta(hidden: Optional[bool], locked: Optional[bool], delete_intent: Optional[str]) -> str:
+def _classes_for_meta(hidden: Optional[bool]) -> str:
     classes = []
-    if hidden: classes.append("is-hidden")
-    if locked: classes.append("is-locked")
-    if delete_intent == "hard": classes.append("delete-intent-hard")
+    if hidden:
+        classes.append("is-hidden")
     return (" " + " ".join(classes)) if classes else ""
 
 def _card_block_html(
@@ -327,12 +317,10 @@ def _card_block_html(
     card_id: str | None = None,
     hidden: Optional[bool] = None,
     order: Optional[int] = None,
-    locked: Optional[bool] = None,
-    delete_intent: Optional[str] = None,
     include_toolbar: bool = False,
     editable: bool = False,
 ) -> str:
-    meta_cls = _classes_for_meta(hidden, locked, delete_intent)
+    meta_cls = _classes_for_meta(hidden)
     toolbar = TOOLBAR_HTML if include_toolbar else ""
     # 빈 thumb-wrap 제거: 썸네일 있을 때만 출력
     thumb_wrap = (
@@ -343,11 +331,9 @@ def _card_block_html(
     editable_cls = " editable" if editable else ""
     data_id_attr = f' data-card-id="{card_id}"' if card_id else ""
     data_hidden = f' data-hidden="{str(bool(hidden)).lower()}"' if hidden is not None else ""
-    data_locked = f' data-locked="{str(bool(locked)).lower()}"' if locked is not None else ""
     data_order  = f' data-order="{order}"' if isinstance(order, int) else ""
-    data_delint = f' data-delete-intent="hard"' if delete_intent == "hard" else ""
     return f"""
-<div class="card{meta_cls}" data-card="{title}"{data_id_attr}{data_hidden}{data_order}{data_locked}{data_delint}>
+<div class="card{meta_cls}" data-card="{title}"{data_id_attr}{data_hidden}{data_order}>
   <div class="card-head">
     <h2>{title}</h2>
     {toolbar}
@@ -371,7 +357,7 @@ def render_master_index(folders: list[dict], *, css_basename: str = "master.css"
     blocks: List[str] = []
     for f in folders:
         card_id = f.get("id") or f.get("card_id")
-        hidden, order, locked, delete_intent = _meta_from_dict(f)
+        hidden, order = _meta_from_dict(f)
 
         if hidden:
             continue
@@ -384,8 +370,6 @@ def render_master_index(folders: list[dict], *, css_basename: str = "master.css"
                 card_id=card_id,
                 hidden=hidden,
                 order=order,
-                locked=locked,
-                delete_intent=delete_intent,
                 include_toolbar=False,
                 editable=False,
              )

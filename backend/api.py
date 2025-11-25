@@ -480,6 +480,13 @@ class MasterApi:
             title = heading.get_text(strip=True)
             if not title:
                 continue
+
+            # 🔹 파일시스템에 폴더가 실제로 존재할 때만 child index 생성
+            folder_path = resource_dir / title
+            if not (folder_path.exists() and folder_path.is_dir()):
+                print(f"[push] skip child for missing folder: {title}")
+                continue
+
             card_id = folder_id_map.get(title)
 
             cleaned_div_html, _ = sanitize_for_publish(
@@ -506,7 +513,7 @@ class MasterApi:
                 css_basename=css_basename,
                 card_id=card_id,
             )
-            self._write(self._p_resource_dir() / title / "index.html", child_html)
+            self._write(folder_path / "index.html", child_html)
 
         print(f"[push] ok=True blocks={block_count} css={css_basename}")
 
@@ -542,6 +549,9 @@ class MasterApi:
                     "sanRemovedAttrs": 0,
                     "sanUnwrappedTags": 0,
                     "sanBlockedUrls": 0,
+                    "prunedFromMaster": 0,
+                    "childRebuilt": 0,
+                    "thumbsDeleted": 0,
                 }
 
                 # sanitizer 누적치 초기화
@@ -587,7 +597,49 @@ class MasterApi:
                     errors.append(f"부트스트랩 실패: {exc}")
                     print(f"[bootstrap] failed: {exc}")
 
-                # 3) 신규 카드 자동 머지 (기본 ON)
+                # 3) prune 적용: 파일시스템 기준으로 사라진 폴더 정리
+                prune_removed = 0
+                prune_child_built = 0
+                prune_thumbs = 0
+                try:
+                    # 기본 ON, 필요하면 SUKSUKIDX_PRUNE_ON_SYNC=0 으로 비활성화 가능
+                    if os.getenv("SUKSUKIDX_PRUNE_ON_SYNC", "1") != "0":
+                        # 썸네일 실제 삭제는 기본 OFF
+                        # 필요 시 SUKSUKIDX_PRUNE_DELETE_THUMBS=1 로 고아 썸네일도 함께 삭제
+                        delete_thumbs = (
+                            os.getenv("SUKSUKIDX_PRUNE_DELETE_THUMBS", "0") == "1"
+                        )
+
+                        # 기존 prune_apply 재사용 (DiffReporter + PruneApplier 내부 호출)
+                        prune_result = self.prune_apply(
+                            report=None, delete_thumbs=delete_thumbs
+                        )
+                        prune_removed = prune_result.get("removed_from_master", 0)
+                        prune_child_built = prune_result.get("child_built", 0)
+                        prune_thumbs = prune_result.get("thumbs_deleted", 0)
+
+                        if (
+                            prune_removed != 0
+                            or prune_child_built != 0
+                            or prune_thumbs != 0
+                        ):
+                            print(
+                                "[prune] applied: "
+                                f"removed_from_master={prune_removed} "
+                                f"child_built={prune_child_built} "
+                                f"thumbs_deleted={prune_thumbs} "
+                                f"delete_thumbs={delete_thumbs}"
+                            )
+
+                except Exception as exc:
+                    errors.append(f"프룬 적용 실패: {exc}")
+                    print(f"[prune] failed: {exc}")
+
+                metrics["prunedFromMaster"] = prune_removed
+                metrics["childRebuilt"] = prune_child_built
+                metrics["thumbsDeleted"] = prune_thumbs
+
+                # 4) 신규 카드 자동 머지 (기본 ON)
                 try:
                     if os.getenv("SUKSUKIDX_AUTO_MERGE_NEW", "1") != "0":
                         master_content_path = self._p_master_content()
@@ -611,7 +663,7 @@ class MasterApi:
                     errors.append(f"신규 카드 자동 병합 실패: {exc}")
                     print(f"[merge] failed: {exc}")
 
-                # 4) 푸시
+                # 5) 푸시
                 push_ok = True
                 blocks_updated = 0
                 try:
@@ -681,6 +733,9 @@ class MasterApi:
                     "sanRemovedAttrs": 0,
                     "sanUnwrappedTags": 0,
                     "sanBlockedUrls": 0,
+                    "prunedFromMaster": 0,
+                    "childRebuilt": 0,
+                    "thumbsDeleted": 0,
                 },
                 "locked": True,
             }
@@ -703,6 +758,9 @@ class MasterApi:
                     "sanRemovedAttrs": 0,
                     "sanUnwrappedTags": 0,
                     "sanBlockedUrls": 0,
+                    "prunedFromMaster": 0,
+                    "childRebuilt": 0,
+                    "thumbsDeleted": 0,
                 },
             }
 

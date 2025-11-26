@@ -597,7 +597,31 @@ class MasterApi:
                     errors.append(f"부트스트랩 실패: {exc}")
                     print(f"[bootstrap] failed: {exc}")
 
-                # 3) prune 적용: 파일시스템 기준으로 사라진 폴더 정리
+                # 3) 신규 카드 자동 머지 (기본 ON) + ID 기반 rename 반영
+                try:
+                    if os.getenv("SUKSUKIDX_AUTO_MERGE_NEW", "1") != "0":
+                        master_content_path = self._p_master_content()
+                        current_master_html = (
+                            master_content_path.read_text(encoding="utf-8")
+                            if master_content_path.exists()
+                            else ""
+                        )
+                        merged_html, added_count = self._ensure_cards_for_new_folders(
+                            current_master_html
+                        )
+
+                        # ✅ 내용이 실제로 바뀌었으면, 새 카드가 없더라도 저장
+                        if merged_html != current_master_html:
+                            self._write(master_content_path, merged_html)
+
+                        if added_count > 0:
+                            metrics["foldersAdded"] = added_count
+                            print(f"[merge] added cards={added_count}")
+                except Exception as exc:
+                    errors.append(f"신규 카드 자동 병합 실패: {exc}")
+                    print(f"[merge] failed: {exc}")
+
+                # 4) prune 적용: 파일시스템 기준으로 사라진 폴더 정리
                 prune_removed = 0
                 prune_child_built = 0
                 prune_thumbs = 0
@@ -638,30 +662,6 @@ class MasterApi:
                 metrics["prunedFromMaster"] = prune_removed
                 metrics["childRebuilt"] = prune_child_built
                 metrics["thumbsDeleted"] = prune_thumbs
-
-                # 4) 신규 카드 자동 머지 (기본 ON)
-                try:
-                    if os.getenv("SUKSUKIDX_AUTO_MERGE_NEW", "1") != "0":
-                        master_content_path = self._p_master_content()
-                        current_master_html = (
-                            master_content_path.read_text(encoding="utf-8")
-                            if master_content_path.exists()
-                            else ""
-                        )
-                        merged_html, added_count = self._ensure_cards_for_new_folders(
-                            current_master_html
-                        )
-
-                        # ✅ 내용이 실제로 바뀌었으면, 새 카드가 없더라도 저장
-                        if merged_html != current_master_html:
-                            self._write(master_content_path, merged_html)
-
-                        if added_count > 0:
-                            metrics["foldersAdded"] = added_count
-                            print(f"[merge] added cards={added_count}")
-                except Exception as exc:
-                    errors.append(f"신규 카드 자동 병합 실패: {exc}")
-                    print(f"[merge] failed: {exc}")
 
                 # 5) 푸시
                 push_ok = True

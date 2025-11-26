@@ -5,6 +5,7 @@ import time
 import os
 import traceback
 import shutil
+import json
 from datetime import datetime
 
 try:
@@ -166,6 +167,303 @@ class MasterApi:
 
     def _p_master_index(self) -> Path:
         return Path(self._master_index_path_str)
+
+    # ID 레지스트리(JSON) 경로: backend/.suksukidx.registry.json
+    def _p_id_registry(self) -> Path:
+        """
+        카드 ↔ 폴더 매핑 정보를 저장하는 ID 레지스트리 파일 경로.
+        - 위치: backend/.suksukidx.registry.json
+        - 형식: JSON (version, items[id, folder, title, ...])
+        - 목적: 폴더 rename / 삭제 / 생성 시 메타 유지에 필요
+        """
+        return self._p_base_dir() / BACKEND_DIR / ".suksukidx.registry.json"
+
+    # ---- ID 레지스트리 IO -----------------------------------------------
+    def _load_id_registry(self) -> Dict[str, Any]:
+        """
+        ID 레지스트리를 읽어 Dict 형태로 반환한다.
+
+        기본 형식:
+        {
+          "version": 1,
+          "items": [
+            {
+              "id": "uuid-string",
+              "folder": "폴더명",
+              "title": "카드 제목(h2)",
+              "hidden": false,
+              "order": 10,
+              ...
+            },
+            ...
+          ]
+        }
+
+        파일이 없거나, 파싱 실패 시 기본 구조를 반환한다.
+        """
+        path = self._p_id_registry()
+        if not path.exists():
+            return {"version": 1, "items": []}
+
+        try:
+            text = path.read_text(encoding="utf-8")
+            if not text.strip():
+                return {"version": 1, "items": []}
+            data = json.loads(text)
+            # 최소 방어: 기본 키가 없으면 기본값 보정
+            if not isinstance(data, dict):
+                return {"version": 1, "items": []}
+            if "version" not in data:
+                data["version"] = 1
+            if "items" not in data or not isinstance(data["items"], list):
+                data["items"] = []
+            return data
+        except Exception as exc:
+            print(f"[registry] load failed: {exc}")
+            # 문제 있으면 깨끗한 기본 구조로 리셋
+            return {"version": 1, "items": []}
+
+    def _save_id_registry(self, data: Dict[str, Any]) -> None:
+        """
+        ID 레지스트리를 디스크에 저장한다.
+        atomic_write_text를 사용해 부분 손상을 방지한다.
+        """
+        path = self._p_id_registry()
+
+        # 최소 형식 보정
+        if not isinstance(data, dict):
+            data = {"version": 1, "items": []}
+        if "version" not in data:
+            data["version"] = 1
+        if "items" not in data or not isinstance(data["items"], list):
+            data["items"] = []
+
+        try:
+            text = json.dumps(data, ensure_ascii=False, indent=2)
+            # 이미 api.py에서 쓰고 있는 atomic_write_text 재사용
+            atomic_write_text(str(path), text, encoding="utf-8")
+        except Exception as exc:
+            print(f"[registry] save failed: {exc}")
+
+    # ---- ID 레지스트리 부트스트랩 ---------------------------------------
+    def _bootstrap_id_registry_from_master(self) -> Dict[str, Any]:
+        """
+        master_content.html 기반으로 ID 레지스트리를 재구성한다.
+
+        - master_content의 <div class="card">를 스캔해서
+          id / folder / title / hidden / order 정보를 추출
+        - 기존 레지스트리 내용을 id 기준으로 upsert
+        - master_content에 더 이상 존재하지 않는 id는 그대로 두되
+          나중에 prune 단계에서 정리할 수 있도록 남겨둔다.
+        - 실제 저장까지 수행하고, 최종 데이터를 반환한다.
+        """
+        master_path = self._p_master_content()
+        if not master_path.exists():
+            data = {"version": 1, "items": []}
+            self._save_id_registry(data)
+            return data
+
+        try:
+            html = master_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            print(f"[registry] bootstrap: read master_content failed: {exc}")
+            return self._load_id_registry()
+
+        if not html.strip():
+            data = {"version": 1, "items": []}
+            self._save_id_registry(data)
+            return data
+
+        if BeautifulSoup is None:
+            print("[registry] bootstrap: BeautifulSoup not available, skip")
+            return self._load_id_registry()
+
+        soup = BeautifulSoup(html, "html.parser")
+        cards = soup.find_all("div", class_="card")
+
+        # 기존 레지스트리 로드 후 id 기준으로 맵 구성
+        reg = self._load_id_registry()
+        items_by_id: Dict[str, Dict[str, Any]] = {}
+        for item in reg.get("items", []):
+            iid = item.get("id")
+            if iid:
+                # 얕은 복사해서 로컬에서 수정
+                items_by_id[iid] = dict(item)
+
+        for card_div in cards:
+            card_id = (card_div.get("data-card-id") or "").strip()
+            if not card_id:
+                # card_id 없는 카드는 일단 건너뜀 (ensure_card_ids 이후 다시 부트스트랩 가능)
+                title_el = card_div.find("h2")
+                title_txt = (title_el.get_text(strip=True) if title_el else "").strip()
+                print(
+                    f"[registry] bootstrap: skip card without id (title='{title_txt}')"
+                )
+                continue
+
+            folder = (card_div.get("data-card") or "").strip()
+
+            title_el = card_div.find("h2")
+            title = (title_el.get_text(strip=True) if title_el else "").strip()
+
+            hidden_attr = (card_div.get("data-hidden") or "").strip().lower()
+            classes = card_div.get("class") or []
+            hidden = hidden_attr == "true" or ("is-hidden" in classes)
+
+            order_val = card_div.get("data-order")
+            try:
+                order = int(order_val) if order_val is not None else None
+            except ValueError:
+                order = None
+
+            # 기존 item 가져와서 갱신, 없으면 새 dict
+            item = items_by_id.get(card_id, {})
+            item.update(
+                {
+                    "id": card_id,
+                    # 새로 읽어온 folder / title이 있으면 우선 사용
+                    "folder": folder or item.get("folder"),
+                    "title": title or item.get("title"),
+                    "hidden": hidden,
+                }
+            )
+            if order is not None:
+                item["order"] = order
+
+            items_by_id[card_id] = item
+
+        new_items = list(items_by_id.values())
+        data = {
+            "version": reg.get("version", 1),
+            "items": new_items,
+        }
+        self._save_id_registry(data)
+        print(f"[registry] bootstrap: synced items={len(new_items)}")
+        return data
+
+    # ---- ID 레지스트리 헬퍼들 -----------------------------------------
+
+    def _registry_items(self) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        """
+        backend/.suksukidx.registry.json 을 읽어서 (reg, items) 튜플로 반환.
+        reg: 전체 dict, items: 리스트 (없으면 [])
+        """
+        reg = self._load_id_registry()
+        items = reg.get("items")
+        if not isinstance(items, list):
+            items = []
+        return reg, items
+
+    def _registry_find_by_card_id(self, card_id: str) -> Optional[Dict[str, Any]]:
+        """
+        card_id(=UUID)로 레지스트리 한 줄 찾기.
+        """
+        _, items = self._registry_items()
+        for it in items:
+            if it.get("id") == card_id:
+                return it
+        return None
+
+    def _registry_find_by_folder(self, folder: str) -> Optional[Dict[str, Any]]:
+        """
+        folder(폴더명)로 레지스트리 한 줄 찾기.
+        """
+        _, items = self._registry_items()
+        for it in items:
+            if it.get("folder") == folder:
+                return it
+        return None
+
+    def _registry_upsert_item(
+        self,
+        *,
+        card_id: str,
+        folder: Optional[str] = None,
+        title: Optional[str] = None,
+        created_at: Optional[str] = None,
+        hidden: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """
+        주어진 card_id에 대해 레지스트리 아이템을 생성/갱신.
+
+        - card_id 는 필수
+        - folder/title/created_at/hidden 은 주어진 값만 덮어씀
+        - created_at 은 기존 값이 없을 때만 세팅(이미 있으면 유지)
+        """
+        reg, items = self._registry_items()
+
+        item = None
+        for it in items:
+            if it.get("id") == card_id:
+                item = it
+                break
+
+        if item is None:
+            item = {"id": card_id}
+            items.append(item)
+
+        if folder is not None:
+            item["folder"] = folder
+        if title is not None:
+            item["title"] = title
+
+        # created_at 은 한 번 정해지면 유지
+        if not item.get("created_at") and created_at is not None:
+            item["created_at"] = created_at
+
+        if hidden is not None:
+            item["hidden"] = bool(hidden)
+
+        reg["items"] = items
+        self._save_id_registry(reg)
+        return item
+
+    def _registry_remove_by_card_id(self, card_id: str) -> bool:
+        """
+        card_id 로 레지스트리에서 항목 제거.
+        실제로 삭제되면 True, 없으면 False.
+        """
+        reg, items = self._registry_items()
+        new_items = [it for it in items if it.get("id") != card_id]
+        if len(new_items) == len(items):
+            return False
+
+        reg["items"] = new_items
+        self._save_id_registry(reg)
+        return True
+
+    def _registry_prune_missing_folders(self) -> int:
+        """
+        resource/ 에서 사라진 폴더를 가진 레지스트리 항목 정리.
+        반환값: 제거된 항목 수
+        """
+        reg, items = self._registry_items()
+        if not items:
+            return 0
+
+        resource_dir = self._p_resource_dir()
+        kept = []
+        removed = 0
+
+        for it in items:
+            folder = (it.get("folder") or "").strip()
+            if folder and not (resource_dir / folder).is_dir():
+                removed += 1
+            else:
+                kept.append(it)
+
+        if removed:
+            reg["items"] = kept
+            self._save_id_registry(reg)
+
+        return removed
+
+    def refresh_id_registry(self) -> Dict[str, Any]:
+        """
+        외부(예: 디버깅용)에서 수동으로 레지스트리를 재구성할 때 사용할 헬퍼.
+        향후 필요 없으면 제거해도 됨.
+        """
+        return self._bootstrap_id_registry_from_master()
 
     # ---- 파일 IO ----
     def _read(self, p: Union[str, Path]) -> str:
@@ -655,6 +953,20 @@ class MasterApi:
                                 f"delete_thumbs={delete_thumbs}"
                             )
 
+                        # ⭐ 레지스트리 GC: prune으로 제거된 card_id 들을 registry 에서도 정리
+                        removed_ids = prune_result.get("removed_card_ids") or []
+                        for cid in removed_ids:
+                            try:
+                                removed_reg = self._registry_remove_by_card_id(cid)
+                                if removed_reg:
+                                    print(
+                                        f"[registry] GC removed entry from prune id={cid}"
+                                    )
+                            except Exception as exc:
+                                msg = f"레지스트리 GC 실패(id={cid}): {exc}"
+                                print(f"[registry] {msg}")
+                                errors.append(msg)
+
                 except Exception as exc:
                     errors.append(f"프룬 적용 실패: {exc}")
                     print(f"[prune] failed: {exc}")
@@ -678,6 +990,17 @@ class MasterApi:
                     push_ok = False
                     errors.append(f"파일 반영(푸시) 실패: {exc}")
                     print(f"[push] failed: {exc}")
+
+                # 6) ID 레지스트리 부트스트랩(현재는 항상 ON)
+                #    - 반드시 push 이후에 실행해서
+                #      .suksukidx.id / data-card-id 가 동기화된 최종 master_content 기준으로 갱신
+                try:
+                    reg = self._bootstrap_id_registry_from_master()
+                    if isinstance(reg, dict):
+                        metrics["idRegistryItems"] = len(reg.get("items", []))
+                except Exception as exc:
+                    errors.append(f"ID 레지스트리 갱신 실패: {exc}")
+                    print(f"[registry] refresh failed: {exc}")
 
                 overall_ok = scan_ok and push_ok
                 metrics["durationMs"] = int((time.perf_counter() - start_ts) * 1000)
@@ -892,17 +1215,12 @@ class MasterApi:
                 continue
 
             # 2-4) 여기까지 왔으면 "진짜 새 폴더" → 새 카드 생성
-            if not card_id:
-                import uuid
-
-                card_id = str(uuid.uuid4())
-
+            #      이 시점에서는 card_id 를 만들지 않는다.
             card_div = soup.new_tag(
                 "div",
                 attrs={
                     "class": "card",
                     "data-card": name,
-                    "data-card-id": card_id,
                 },
             )
 
@@ -1065,6 +1383,17 @@ class MasterApi:
             print(f"[delete] {msg}")
             errors.append(msg)
 
+        # 6) 레지스트리에서 이 card_id 제거 (master에서 제거된 경우에만)
+        try:
+            if removed_from_master:
+                removed_reg = self._registry_remove_by_card_id(card_id)
+                if removed_reg:
+                    print(f"[registry] removed entry for id={card_id}")
+        except Exception as exc:
+            msg = f"레지스트리 정리 실패(id={card_id}): {exc}"
+            print(f"[registry] {msg}")
+            errors.append(msg)
+
         ok = removed_from_master and push_ok and not errors
         result: Dict[str, Any] = {
             "ok": bool(ok),
@@ -1134,7 +1463,7 @@ class MasterApi:
 
     def prune_apply(
         self, report: Optional[PruneReport] = None, delete_thumbs: bool = False
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Any]:
         """
         PruneReport를 실제로 반영한다.
         - master_content: folders_missing_in_fs 제거

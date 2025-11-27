@@ -98,6 +98,11 @@ except Exception:
     )
 
 try:
+    from .card_registry import CardRegistry
+except Exception:
+    from card_registry import CardRegistry
+
+try:
     from bs4 import BeautifulSoup, Comment
 except Exception:
     BeautifulSoup = None
@@ -147,6 +152,12 @@ class MasterApi:
         self._master_content_path_str = str(base_dir / BACKEND_DIR / MASTER_CONTENT)
         self._resource_dir_str = str(base_dir / RESOURCE_DIR)
         self._master_index_path_str = str(Path(self._resource_dir_str) / MASTER_INDEX)
+
+        # ID 레지스트리: backend/.suksukidx.registry.json 기준
+        self._registry = CardRegistry(
+            registry_path=base_dir / BACKEND_DIR / ".suksukidx.registry.json",
+            resource_dir=base_dir / RESOURCE_DIR,
+        )
 
         super().__init__() if hasattr(super(), "__init__") else None
         # ENV로 락 경로 오버라이드 허용(멀티 인스턴스/테스트 편의)
@@ -655,6 +666,20 @@ class MasterApi:
                                 f"delete_thumbs={delete_thumbs}"
                             )
 
+                        # 레지스트리 GC: prune으로 제거된 card_id 들을 registry 에서도 정리
+                        removed_ids = prune_result.get("removed_card_ids") or []
+                        for cid in removed_ids:
+                            try:
+                                removed_reg = self._registry.remove_by_card_id(cid)
+                                if removed_reg:
+                                    print(
+                                        f"[registry] GC removed entry from prune id={cid}"
+                                    )
+                            except Exception as exc:
+                                msg = f"레지스트리 GC 실패(id={cid}): {exc}"
+                                print(f"[registry] {msg}")
+                                errors.append(msg)
+
                 except Exception as exc:
                     errors.append(f"프룬 적용 실패: {exc}")
                     print(f"[prune] failed: {exc}")
@@ -678,6 +703,17 @@ class MasterApi:
                     push_ok = False
                     errors.append(f"파일 반영(푸시) 실패: {exc}")
                     print(f"[push] failed: {exc}")
+
+                # 6) ID 레지스트리 부트스트랩(현재는 항상 ON)
+                #    - 반드시 push 이후에 실행해서
+                #      .suksukidx.id / data-card-id 가 동기화된 최종 master_content 기준으로 갱신
+                try:
+                    reg = self._registry.bootstrap_from_master(self._p_master_content())
+                    if isinstance(reg, dict):
+                        metrics["idRegistryItems"] = len(reg.get("items", []))
+                except Exception as exc:
+                    errors.append(f"ID 레지스트리 갱신 실패: {exc}")
+                    print(f"[registry] refresh failed: {exc}")
 
                 overall_ok = scan_ok and push_ok
                 metrics["durationMs"] = int((time.perf_counter() - start_ts) * 1000)
@@ -892,17 +928,12 @@ class MasterApi:
                 continue
 
             # 2-4) 여기까지 왔으면 "진짜 새 폴더" → 새 카드 생성
-            if not card_id:
-                import uuid
-
-                card_id = str(uuid.uuid4())
-
+            #      이 시점에서는 card_id 를 만들지 않는다.
             card_div = soup.new_tag(
                 "div",
                 attrs={
                     "class": "card",
                     "data-card": name,
-                    "data-card-id": card_id,
                 },
             )
 
@@ -981,7 +1012,36 @@ class MasterApi:
             }
 
         master_content = self._p_master_content()
+        master_index = self._p_master_index()
+
         html = self._read(master_content)
+
+        # 파일이 없거나(=read 결과도 빈 문자열) 내용이 비어 있으면
+        # 1차: master_index.html 기준으로 master_content를 한 번 부트스트랩
+        if not html.strip():
+            if master_index.exists():
+                try:
+                    inner = extract_body_inner(self._read(master_index))
+                    inner = prefix_resource_paths_for_root(inner)
+                    self._write(master_content, inner)
+                    html = inner
+                    print("[delete] bootstrap master_content from master_index")
+                except Exception as exc:
+                    print(f"[delete] WARN: bootstrap from master_index failed: {exc}")
+
+        # 2차: 그래도 비어 있으면, 최후 수단으로 rebuild_master() 사용
+        if not html.strip():
+            try:
+                rb = self.rebuild_master()
+                print(
+                    f"[delete] fallback rebuild_master used: "
+                    f"added={rb.get('added') if isinstance(rb, dict) else '??'}"
+                )
+                html = self._read(master_content)
+            except Exception as exc:
+                print(f"[delete] WARN: rebuild_master fallback failed: {exc}")
+
+        # 3차: 그래도 비어 있으면 진짜 에러
         if not html.strip():
             return {
                 "ok": False,
@@ -998,19 +1058,35 @@ class MasterApi:
 
         resource_dir = self._p_resource_dir()
         folder_name: Optional[str] = None
+        errors: List[str] = []
 
-        # 1) .suksukidx.id → card_id 역매핑으로 폴더명 찾기(우선)
+        # 1) ID 레지스트리에서 card_id 기준으로 폴더명 조회(우선)
         try:
-            folder_id_map = ensure_card_ids(resource_dir)
+            entry = self._registry.find_by_card_id(card_id)
         except Exception as exc:
-            folder_id_map = {}
-            print(f"[delete] WARN: ensure_card_ids failed in delete_card_by_id: {exc}")
+            entry = None
+            msg = f"레지스트리 조회 실패(id={card_id}): {exc}"
+            print(f"[delete] {msg}")
+            errors.append(msg)
+        else:
+            if entry and entry.get("folder"):
+                folder_name = (entry.get("folder") or "").strip()
 
-        if folder_id_map:
-            id_to_folder = {v: k for k, v in folder_id_map.items()}
-            folder_name = id_to_folder.get(card_id)
+        # 2) 레지스트리에서 찾지 못했다면 .suksukidx.id → card_id 역매핑으로 폴더명 찾기(폴백)
+        if not folder_name:
+            try:
+                folder_id_map = ensure_card_ids(resource_dir)
+            except Exception as exc:
+                folder_id_map = {}
+                print(
+                    f"[delete] WARN: ensure_card_ids failed in delete_card_by_id: {exc}"
+                )
 
-        # 2) 폴더명을 찾지 못했다면 DOM 메타에서 폴더 후보 추출(폴백)
+            if folder_id_map:
+                id_to_folder = {v: k for k, v in folder_id_map.items()}
+                folder_name = id_to_folder.get(card_id)
+
+        # 3) 그래도 폴더명을 찾지 못했다면 DOM 메타에서 폴더 후보 추출(최종 폴백)
         if not folder_name:
             h = target.select_one(".card-head h2") or target.find("h2")
             title = (h.get_text(strip=True) if h else "").strip()
@@ -1021,11 +1097,10 @@ class MasterApi:
                     folder_name = cand
                     break
 
-        errors: List[str] = []
         deleted_folder = False
         removed_from_master = False
 
-        # 3) 파일시스템 폴더 삭제
+        # 4) 파일시스템 폴더 삭제
         if folder_name:
             folder_path = resource_dir / folder_name
             try:
@@ -1045,7 +1120,7 @@ class MasterApi:
             print(f"[delete] {msg}")
             errors.append(msg)
 
-        # 4) master_content에서 카드 블록 제거
+        # 5) master_content에서 카드 블록 제거
         try:
             target.decompose()
             self._write(master_content, str(soup))
@@ -1055,7 +1130,7 @@ class MasterApi:
             print(f"[delete] {msg}")
             errors.append(msg)
 
-        # 5) master_index / child index 재빌드
+        # 6) master_index / child index 재빌드
         push_ok = True
         try:
             self._push_master_to_resource()
@@ -1063,6 +1138,17 @@ class MasterApi:
             push_ok = False
             msg = f"인덱스 재생성(_push_master_to_resource) 실패: {exc}"
             print(f"[delete] {msg}")
+            errors.append(msg)
+
+        # 7) 레지스트리에서 이 card_id 제거 (master에서 제거된 경우에만)
+        try:
+            if removed_from_master:
+                removed_reg = self._registry.remove_by_card_id(card_id)
+                if removed_reg:
+                    print(f"[registry] removed entry for id={card_id}")
+        except Exception as exc:
+            msg = f"레지스트리 정리 실패(id={card_id}): {exc}"
+            print(f"[registry] {msg}")
             errors.append(msg)
 
         ok = removed_from_master and push_ok and not errors
@@ -1077,6 +1163,15 @@ class MasterApi:
         if errors:
             result["errors"] = errors
         return result
+
+    # ---- ID 레지스트리 수동 갱신 헬퍼 ----
+    def refresh_id_registry(self) -> Dict[str, Any]:
+        """
+        외부(예: 디버깅용)에서 수동으로 레지스트리를 재구성할 때 사용할 헬퍼.
+        - master_content.html의 최신 상태를 기준으로
+          backend/.suksukidx.registry.json을 재구성한다.
+        """
+        return self._registry.bootstrap_from_master(self._p_master_content())
 
     # ---- 썸네일 1건 ----
     def refresh_thumb(self, folder_name: str, width: int = 640) -> Dict[str, Any]:
@@ -1134,7 +1229,7 @@ class MasterApi:
 
     def prune_apply(
         self, report: Optional[PruneReport] = None, delete_thumbs: bool = False
-    ) -> Dict[str, int]:
+    ) -> Dict[str, Any]:
         """
         PruneReport를 실제로 반영한다.
         - master_content: folders_missing_in_fs 제거

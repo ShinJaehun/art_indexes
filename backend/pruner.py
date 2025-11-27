@@ -423,6 +423,7 @@ class PruneApplier:
 
         soup = self._load_master_soup()
         removed = 0
+        removed_ids: List[str] = []
 
         # 2) master_content: folders_missing_in_fs 제거
         targets = set(report.folders_missing_in_fs)
@@ -436,6 +437,14 @@ class PruneApplier:
                 data_folder = (div.get("data-folder") or "").strip()
                 data_card = (div.get("data-card") or "").strip()
                 if title in targets or data_folder in targets or data_card in targets:
+                    # card_id 수집(레지스트리 GC용)
+                    try:
+                        cid = (div.get("data-card-id") or "").strip()
+                        if cid:
+                            removed_ids.append(cid)
+                    except Exception:
+                        pass
+
                     div.decompose()
                     removed += 1
 
@@ -517,6 +526,7 @@ class PruneApplier:
             "removed_from_master": removed,
             "child_built": child_built,
             "thumbs_deleted": thumbs_deleted,
+            "removed_card_ids": removed_ids,
         }
 
 

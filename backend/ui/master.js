@@ -263,7 +263,7 @@ function renderSyncResult(result) {
 function detectBridge() {
   // API 객체가 있고, 키도 하나 이상 있어야 "실제 준비됨"으로 판단
   const api = (window.pywebview && window.pywebview.api) || null;
-  hasBridge = !!(api && Object.keys(api).length > 0);
+  hasBridge = !!api;
 
   $("#readonlyNote")?.classList.toggle("hidden", hasBridge);
   const toolbar = $("#globalToolbar");

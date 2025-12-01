@@ -260,6 +260,44 @@ function renderSyncResult(result) {
   });
 }
 
+
+// ---- P5-1: 현재 인덱스 파일 경로 상태바 ---------------------------------
+
+function detectCurrentIndexPath() {
+  // 1) body data-index-path 우선
+  const fromBody = document.body && document.body.dataset && document.body.dataset.indexPath;
+  if (fromBody) return fromBody;
+
+  // 2) 전역 변수로 제공되는 경우
+  if (typeof window.__CURRENT_INDEX_PATH === "string" && window.__CURRENT_INDEX_PATH) {
+    return window.__CURRENT_INDEX_PATH;
+  }
+
+  // 3) 브리지가 있으면 master_index 기준 기본값
+  if (hasBridge) return "resource/master_index.html";
+
+  // 4) 브라우저 미리보기 모드
+  return "(미리보기 모드)";
+}
+
+function ensureIndexPathBar() {
+  let bar = $("#indexPathBar");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "indexPathBar";
+    bar.className = "index-status"; // CSS는 publish.css 등에서 정의
+    const anchor = $("#statusBar") || $("#content") || document.body;
+    anchor.insertAdjacentElement("beforebegin", bar);
+  }
+  return bar;
+}
+
+function updateIndexPathBar(extraText) {
+  const bar = ensureIndexPathBar();
+  const path = detectCurrentIndexPath();
+  bar.textContent = extraText ? `현재 파일: ${path} ${extraText}` : `현재 파일: ${path}`;
+}
+
 function detectBridge() {
   // API 객체가 있고, 키도 하나 이상 있어야 "실제 준비됨"으로 판단
   const api = (window.pywebview && window.pywebview.api) || null;
@@ -326,6 +364,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (typeof window.wireExtraToolbar === "function") {
       window.wireExtraToolbar();
     }
+
+    // P5-1: 미리보기 모드에서도 경로 상태바 갱신
+    updateIndexPathBar();
 
   } else {
     await loadMaster();
@@ -438,6 +479,9 @@ async function loadMaster() {
         $("#content").innerHTML = `<p class="hint">브라우저 미리보기: <code>.card</code> 블록이 없습니다.</p>`;
       }
     }
+
+    // P5-1: 매번 로드 후 현재 파일 경로 표시
+    updateIndexPathBar();
     enhanceBlocks();
     wireGlobalToolbar();
 
@@ -494,10 +538,28 @@ function enhanceBlocks() {
         actions.innerHTML = `
           <button class="btn btnEditOne">편집</button>
           <button class="btn btnSaveOne" disabled>저장</button>
+          <button class="btn btnCancelOne" disabled>취소</button>
           <button class="btn btnThumb">썸네일 갱신</button>
           <button class="btn btnToggleHidden">숨김</button>
           <button class="btn btnToggleDelete">삭제</button>
         `;
+      } else {
+        // P5-2: 기존 마크업에 취소 버튼이 없다면 추가(하위호환)
+        if (!actions.querySelector(".btnCancelOne")) {
+          const cancelBtn = document.createElement("button");
+          cancelBtn.className = "btn btnCancelOne";
+          cancelBtn.textContent = "취소";
+          cancelBtn.disabled = true;
+          const saveBtn = actions.querySelector(".btnSaveOne");
+          if (saveBtn && saveBtn.nextSibling) {
+            saveBtn.insertAdjacentElement("afterend", cancelBtn);
+          } else if (saveBtn) {
+            actions.appendChild(cancelBtn);
+          } else {
+            // 이론상 없겠지만, 그래도 actions 안 첫 번째에 넣어둠
+            actions.insertBefore(cancelBtn, actions.firstChild);
+          }
+        }
       }
 
       if (h2) headEl.appendChild(h2);
@@ -600,13 +662,14 @@ function enhanceBlocks() {
     const actions = $(".card-head .card-actions", div);
     const inner = $(".inner", div);
 
-    // ✅ URL 오토링크 + 버튼화(초기 표시 시 1회)
+    // URL 오토링크 + 버튼화(초기 표시 시 1회)
     autoLinkify(inner);
     decorateExternalLinks(inner);
 
     const folder = div.getAttribute("data-card") || (title?.textContent || "").trim();
     const btnEditOne = $(".btnEditOne", actions);
     const btnSaveOne = $(".btnSaveOne", actions);
+    const btnCancelOne = $(".btnCancelOne", actions);
     const btnThumb = $(".btnThumb", actions);
 
     const btnToggleHidden = $(".btnToggleHidden", actions);
@@ -819,15 +882,37 @@ function enhanceBlocks() {
     inner.classList.remove("editable");
     btnEditOne.disabled = false;
     btnSaveOne.disabled = true;
+    if (btnCancelOne) btnCancelOne.disabled = true;
 
-    // 편집 시작
+    // 편집 시작 (개별 카드)
     btnEditOne.onclick = () => {
       if (!hasBridge) return alert("편집은 데스크톱 앱에서만 가능합니다.");
+
+      // P5-2: 현재 내용을 스냅샷으로 보관 (DOM 프로퍼티, data-* 아님)
+      inner.__snapshotHtml = inner.innerHTML;
+
       inner.contentEditable = "true";
       inner.classList.add("editable");
       btnEditOne.disabled = true;
       btnSaveOne.disabled = false;
+      if (btnCancelOne) btnCancelOne.disabled = false;
     };
+
+    // P5-2: 편집 취소 (개별 카드)
+    if (btnCancelOne) {
+      btnCancelOne.onclick = () => {
+        if (!inner.__snapshotHtml) return; // 스냅샷 없으면 취소 무시
+
+        inner.innerHTML = inner.__snapshotHtml;
+        delete inner.__snapshotHtml;
+
+        inner.contentEditable = "false";
+        inner.classList.remove("editable");
+        btnEditOne.disabled = false;
+        btnSaveOne.disabled = true;
+        btnCancelOne.disabled = true;
+      };
+    }
 
     // 저장
     btnSaveOne.onclick = async () => {
@@ -844,6 +929,13 @@ function enhanceBlocks() {
         inner.classList.remove("editable");
         btnEditOne.disabled = false;
         btnSaveOne.disabled = true;
+
+        // 저장 성공 시 스냅샷 폐기 + 취소 버튼 비활성화
+        if (btnCancelOne) {
+          btnCancelOne.disabled = true;
+        }
+        delete inner.__snapshotHtml;
+
       } catch (exc) {
         console.error(exc);
         showStatus({ level: "error", title: "저장 실패", lines: [String(exc?.message || exc)] });

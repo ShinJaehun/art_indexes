@@ -217,7 +217,7 @@ def make_video_thumb(video_path: Path, out_jpg: Path, width: int = 640) -> bool:
             str(exe),
             "-y",
             "-ss",
-            "00:00:01",  # 초반 검은 화면 회피
+            "00:00:10",  # P5-썸네일 v2: 10초 지점 캡처
             "-i",
             str(video_path),
             "-vframes",
@@ -249,7 +249,9 @@ def make_video_thumb(video_path: Path, out_jpg: Path, width: int = 640) -> bool:
             pass
 
 
-def make_thumbnail_for_folder(folder: Path, max_width: int = 640) -> bool:
+def make_thumbnail_for_folder(
+    folder: Path, max_width: int = 640
+) -> tuple[bool, str | None]:
     # 1) 대표 이미지
     for ext in (".png", ".jpg", ".jpeg", ".webp"):
         img = next(folder.glob(f"*{ext}"), None)
@@ -271,7 +273,7 @@ def make_thumbnail_for_folder(folder: Path, max_width: int = 640) -> bool:
                     atomic_write_bytes(str(out), buf.getvalue())
 
                 print(f"[thumb] OK (image): {out}")
-                return True
+                return True, "image"
             except Exception as e:
                 print(f"[thumb] image resize FAIL: {e}", file=sys.stderr)
             break
@@ -281,17 +283,17 @@ def make_thumbnail_for_folder(folder: Path, max_width: int = 640) -> bool:
     if pdf:
         out = folder / "thumbs" / f"{_safe_name(folder.name)}.jpg"
         if make_pdf_thumb(pdf, out):
-            return True
+            return True, "pdf"
 
     # 3) VIDEO
     mp4 = next(folder.glob("*.mp4"), None)
     if mp4:
         out = folder / "thumbs" / f"{_safe_name(folder.name)}.jpg"
         if make_video_thumb(mp4, out, width=max_width):
-            return True
+            return True, "video"
 
     print(f"[thumb] SKIP (no source): {folder.name}")
-    return False
+    return False, None
 
 
 def _iter_content_folders(resource_dir: Path):
@@ -318,10 +320,13 @@ def scan_and_make_thumbs(
     """
     resource_dir = Path(resource_dir)
     any_error = False
+
     for folder in _iter_content_folders(resource_dir):
         try:
-            make_thumbnail_for_folder(folder, max_width=width)
+            ok, _src = make_thumbnail_for_folder(folder, max_width=width)
+            # ok=False (소스 없음/도구 미설치 등)은 전체 스캔 실패로 보지 않고 넘어감
         except Exception as e:
             print(f"[thumb] ERROR in {folder.name}: {e}", file=sys.stderr)
             any_error = True
+
     return not any_error

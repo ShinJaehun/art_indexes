@@ -118,6 +118,7 @@ class CardRegistry:
         title: Optional[str] = None,
         created_at: Optional[str] = None,
         hidden: Optional[bool] = None,
+        thumb_source: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         주어진 card_id에 대해 레지스트리 아이템을 생성/갱신.
@@ -151,6 +152,10 @@ class CardRegistry:
 
         if hidden is not None:
             item["hidden"] = bool(hidden)
+
+        # P5-썸네일 v2: 썸네일 소스 타입(image/pdf/video) 메타
+        if thumb_source is not None:
+            item["thumb_source"] = thumb_source
 
         data["items"] = items
         self.save(data)

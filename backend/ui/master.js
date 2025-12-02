@@ -943,7 +943,7 @@ function enhanceBlocks() {
       }
     };
 
-    // 썸네일 갱신
+    // 썸네일 갱신 (P5-썸네일 v2: 타입 순환 + 즉시 썸네일 리로드)
     btnThumb.onclick = async () => {
       if (!hasBridge) return alert("데스크톱 앱에서만 가능합니다.");
       btnThumb.disabled = true;
@@ -951,13 +951,56 @@ function enhanceBlocks() {
       try {
         const result = await call("refresh_thumb", folder, 640);
         if (result?.ok) {
-          showStatus({ level: "ok", title: "썸네일 갱신 완료", lines: [folder], autoHideMs: 1800 });
+          // 백엔드가 알려주는 사용 소스 타입(image/pdf/video)을 상태바에 표시
+          const src = (result.source || "").toLowerCase();
+          const srcLabel =
+            src === "image" ? "이미지" :
+              src === "pdf" ? "PDF" :
+                src === "video" ? "동영상" :
+                  null;
+
+          const lines = [folder];
+          if (srcLabel) {
+            lines.push(`사용 소스: ${srcLabel}`);
+          }
+
+          // 현재 카드의 썸네일 이미지를 강제로 리로드(캐시 무시)
+          if (thumbWrap) {
+            const img = thumbWrap.querySelector("img");
+            if (img && img.src) {
+              try {
+                const url = new URL(img.src, window.location.href);
+                url.searchParams.set("_ts", Date.now().toString());
+                img.src = url.toString();
+              } catch {
+                // URL 파싱 실패 시, 단순 쿼리스트링 덧붙이기 폴백
+                img.src = img.src.split("#")[0].split("?")[0] + `?ts=${Date.now()}`;
+              }
+            }
+          }
+
+          showStatus({
+            level: "ok",
+            title: "썸네일 갱신 완료",
+            lines,
+            autoHideMs: 1800,
+          });
         } else {
           const hint = result?.error ? [result.error] : ["소스 이미지 없음 또는 변환 실패"];
-          showStatus({ level: "error", title: "썸네일 갱신 실패", lines: [folder], errors: hint });
+          showStatus({
+            level: "error",
+            title: "썸네일 갱신 실패",
+            lines: [folder],
+            errors: hint,
+          });
         }
       } catch (exc) {
-        showStatus({ level: "error", title: "썸네일 갱신 예외", lines: [folder], errors: [String(exc?.message || exc)] });
+        showStatus({
+          level: "error",
+          title: "썸네일 갱신 예외",
+          lines: [folder],
+          errors: [String(exc?.message || exc)],
+        });
       } finally {
         btnThumb.disabled = false;
       }

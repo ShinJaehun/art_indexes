@@ -1184,9 +1184,35 @@ class MasterApi:
                     "error": f"'thumbs' 경로가 파일입니다: {thumbs_dir}. 폴더로 복구해 주세요.",
                 }
 
-            ok = make_thumbnail_for_folder(folder_path, max_width=width)
+            ok, src = make_thumbnail_for_folder(folder_path, max_width=width)
             if ok:
-                return {"ok": True}
+                # P5-썸네일 v2:
+                # - 성공 시 registry에 thumb_source 기록
+                # - 항상 thumbs/<폴더이름>.jpg 로 덮어쓰기 (thumbs.py 쪽에서 이미 수행)
+                try:
+                    # 폴더 ↔ 카드 ID 매핑 보장
+                    folder_id_map = ensure_card_ids(self._p_resource_dir())
+                except Exception as exc:
+                    folder_id_map = {}
+                    print(
+                        f"[thumb] WARN: ensure_card_ids failed in refresh_thumb: {exc}"
+                    )
+
+                card_id = folder_id_map.get(folder_name)
+                if card_id:
+                    try:
+                        self._registry.upsert_item(
+                            card_id=card_id,
+                            folder=folder_name,
+                            thumb_source=src,
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[thumb] WARN: registry update failed for {folder_name}: {exc}"
+                        )
+
+                return {"ok": True, "source": src}
+
             else:
                 return {
                     "ok": False,

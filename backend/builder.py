@@ -33,7 +33,9 @@ TOOLBAR_HTML = """
 """.strip()
 
 
-def run_sync_all(resource_dir: Path, thumb_width: int = 640, *, scan_only: bool = False) -> int | Dict[str, Any]:
+def run_sync_all(
+    resource_dir: Path, thumb_width: int = 640, *, scan_only: bool = False
+) -> int | Dict[str, Any]:
     """
     리소스 전체 썸네일 스캔/생성만 수행(HTML 생성 없음).
     SSOT 스캔 단일화 + 썸네일 리빌드 엔트리.
@@ -50,11 +52,15 @@ def run_sync_all(resource_dir: Path, thumb_width: int = 640, *, scan_only: bool 
             from .thumbs import scan_and_make_thumbs
         except Exception:
             from thumbs import scan_and_make_thumbs
-        ok = scan_and_make_thumbs(resource_dir, refresh=True, width=thumb_width)
+        # P5-썸네일: sync에서는 성능을 위해 기존 썸네일이 있으면 유지
+        #  - 캡처 후보 X + 썸네일 O → 삭제
+        #  - 캡처 후보 O + 썸네일 X → 1회 생성
+        ok = scan_and_make_thumbs(resource_dir, refresh=False, width=thumb_width)
         return 0 if ok else 1
     except Exception as e:
         print(f"❌ internal thumbnail scan failed: {e}")
         return 1
+
 
 # ---------- 카드 ID 보장 (P3-1) ----------
 def ensure_card_ids(resource_dir: Path) -> dict[str, str]:
@@ -75,7 +81,11 @@ def ensure_card_ids(resource_dir: Path) -> dict[str, str]:
 
     try:
         entries = sorted(
-            [p for p in resource_dir.iterdir() if p.is_dir() and not p.name.startswith(".")],
+            [
+                p
+                for p in resource_dir.iterdir()
+                if p.is_dir() and not p.name.startswith(".")
+            ],
             key=lambda p: p.name,
         )
     except Exception as e:
@@ -85,7 +95,7 @@ def ensure_card_ids(resource_dir: Path) -> dict[str, str]:
     for d in entries:
         if d.name.lower() == "thumbs":
             continue
-        
+
         dir_str = str(d)
         cid = read_card_id(dir_str)
 
@@ -97,7 +107,7 @@ def ensure_card_ids(resource_dir: Path) -> dict[str, str]:
             except Exception as e:
                 print(f"[id] WARN: failed to write id for {d.name}: {e}")
                 continue
-            
+
         # 중복 ID 해소: 이미 사용 중이면 새로 발급
         if cid in used_ids and used_ids[cid] != d.name:
             new_cid = str(uuid.uuid4())
@@ -111,11 +121,12 @@ def ensure_card_ids(resource_dir: Path) -> dict[str, str]:
             except Exception as e:
                 print(f"[id] WARN: failed to fix duplicate id for {d.name}: {e}")
                 continue
-            
+
         used_ids[cid] = d.name
         folder_to_id[d.name] = cid
 
     return folder_to_id
+
 
 def _make_slug(name: str) -> str:
     """
@@ -173,7 +184,11 @@ def scan_ssot(resource_dir: Path) -> Dict[str, Any]:
 
     try:
         entries = sorted(
-            [p for p in resource_dir.iterdir() if p.is_dir() and not p.name.startswith(".")],
+            [
+                p
+                for p in resource_dir.iterdir()
+                if p.is_dir() and not p.name.startswith(".")
+            ],
             key=lambda p: p.name,
         )
     except Exception as e:
@@ -191,7 +206,9 @@ def scan_ssot(resource_dir: Path) -> Dict[str, Any]:
                 thumb_count += 1
 
             mtime = _latest_mtime_of_tree(d)
-            rel_path = f"{resource_dir.name}/{d.name}" if d.parent == resource_dir else str(d)
+            rel_path = (
+                f"{resource_dir.name}/{d.name}" if d.parent == resource_dir else str(d)
+            )
 
             folders.append(
                 {
@@ -239,6 +256,7 @@ def _write_if_changed(target: Path, data: bytes) -> None:
     tmp.write_bytes(data)
     tmp.replace(target)
 
+
 def _cleanup_old_css(dirpath: Path, keep_name: str) -> int:
     """dirpath 내 {CSS_PREFIX}.*.css 중 keep_name 이외 삭제"""
     removed = 0
@@ -276,7 +294,9 @@ def ensure_css_assets(resource_dir: Path) -> str:
     _cleanup_old_css(resource_dir, basename)
 
     # 각 폴더 배포
-    for d in sorted(p for p in resource_dir.iterdir() if p.is_dir() and not p.name.startswith(".")):
+    for d in sorted(
+        p for p in resource_dir.iterdir() if p.is_dir() and not p.name.startswith(".")
+    ):
         if d.name.lower() == "thumbs":
             continue
         target = d / basename
@@ -285,7 +305,10 @@ def ensure_css_assets(resource_dir: Path) -> str:
 
     print(f"[css] deployed {basename} to root and folders")
     return basename
+
+
 # ----------------------------------------
+
 
 def _meta_from_dict(d: Dict[str, Any]) -> Tuple[Optional[bool], Optional[int]]:
     """folders 요소(dict)에서 (hidden, order) 안전 추출"""
@@ -303,11 +326,13 @@ def _meta_from_dict(d: Dict[str, Any]) -> Tuple[Optional[bool], Optional[int]]:
 
     return hidden, order
 
+
 def _classes_for_meta(hidden: Optional[bool]) -> str:
     classes = []
     if hidden:
         classes.append("is-hidden")
     return (" " + " ".join(classes)) if classes else ""
+
 
 def _card_block_html(
     title: str,
@@ -325,13 +350,16 @@ def _card_block_html(
     # 빈 thumb-wrap 제거: 썸네일 있을 때만 출력
     thumb_wrap = (
         f'<div class="thumb-wrap"><img class="thumb" src="{thumb_src}" alt="썸네일"/></div>'
-        if thumb_src else ''
+        if thumb_src
+        else ""
     )
     editable_attr = ' contenteditable="true"' if editable else ""
     editable_cls = " editable" if editable else ""
     data_id_attr = f' data-card-id="{card_id}"' if card_id else ""
-    data_hidden = f' data-hidden="{str(bool(hidden)).lower()}"' if hidden is not None else ""
-    data_order  = f' data-order="{order}"' if isinstance(order, int) else ""
+    data_hidden = (
+        f' data-hidden="{str(bool(hidden)).lower()}"' if hidden is not None else ""
+    )
+    data_order = f' data-order="{order}"' if isinstance(order, int) else ""
     return f"""
 <div class="card{meta_cls}" data-card="{title}"{data_id_attr}{data_hidden}{data_order}>
   <div class="card-head">
@@ -346,7 +374,9 @@ def _card_block_html(
 """.strip()
 
 
-def render_master_index(folders: list[dict], *, css_basename: str = "master.css") -> str:
+def render_master_index(
+    folders: list[dict], *, css_basename: str = "master.css"
+) -> str:
     """
     resource/master_index.html(캐시) 렌더
     - 툴바/편집 속성 없음(배포 캐시에는 편집 UI가 없어야 함)
@@ -361,7 +391,7 @@ def render_master_index(folders: list[dict], *, css_basename: str = "master.css"
 
         if hidden:
             continue
-        
+
         blocks.append(
             _card_block_html(
                 title=f.get("title", ""),
@@ -372,8 +402,8 @@ def render_master_index(folders: list[dict], *, css_basename: str = "master.css"
                 order=order,
                 include_toolbar=False,
                 editable=False,
-             )
-         )
+            )
+        )
     html = f"""
 <!DOCTYPE html>
 <html lang="ko">

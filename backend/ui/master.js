@@ -648,7 +648,7 @@ function enhanceBlocks() {
 
     // 제목/썸네일은 편집 제외
     const title = $(".card-head h2", div);
-    const thumbWrap = $(".thumb-wrap", div);
+    let thumbWrap = $(".thumb-wrap", div);
     title?.setAttribute("contenteditable", "false");
     title?.setAttribute("draggable", "false");
     thumbWrap?.setAttribute("contenteditable", "false");
@@ -657,6 +657,51 @@ function enhanceBlocks() {
       el.setAttribute("contenteditable", "false");
       el.setAttribute("draggable", "false");
     });
+
+    // --- 썸네일 img 경로 표준화 ---
+    //   - 원본 HTML에 들어 있는 src를 최대한 그대로 신뢰한다.
+    //   - data-thumb-src 에는 "자연속재료로 표현하기/thumbs/자연속재료로_표현하기.jpg" 같은
+    //     상대 경로만 저장하고, 표시용 src는 "../../resource/..." 로만 바꾼다.
+    if (thumbWrap) {
+      const img = thumbWrap.querySelector("img");
+      if (img) {
+        let storedSrc = img.getAttribute("data-thumb-src");
+
+        if (!storedSrc) {
+          // 1) 현재 src에서 ../../resource/ 프리픽스, 쿼리스트링 제거
+          let raw = img.getAttribute("src") || "";
+          // 쿼리 파라미터 제거
+          raw = raw.split("?")[0];
+
+          // ../../resource/ 또는 ./resource/ 또는 resource/ 같은 앞부분 제거
+          raw = raw
+            .replace(/^(\.\.\/)+resource\//, "")
+            .replace(/^\.\/?resource\//, "")
+            .replace(/^resource\//, "");
+
+          // "…/thumbs/…jpg" 꼴이면 그대로 사용
+          if (/\/thumbs\/[^\/]+\.(jpe?g|png|webp)$/i.test(raw)) {
+            storedSrc = raw;
+          }
+        }
+
+        // 2) 그래도 못 찾았을 때만 최후의 수단으로 folderName 기반 추정
+        if (!storedSrc) {
+          const folderName = div.getAttribute("data-card") || (title?.textContent || "").trim();
+          if (folderName) {
+            // ★ 여기서는 예전 동작과의 하위호환용 "추정값"일 뿐,
+            //    실제로는 대부분 위의 raw 경로에서 이미 구해질 것이다.
+            storedSrc = `${folderName}/thumbs/${folderName}.jpg`;
+          }
+        }
+
+        if (storedSrc) {
+          img.setAttribute("data-thumb-src", storedSrc);
+          // 브리지 여부와 관계없이 항상 resource 기준 경로로 교정
+          img.src = `../../resource/${storedSrc}`;
+        }
+      }
+    }
 
     // 버튼/inner 참조
     const actions = $(".card-head .card-actions", div);
@@ -950,9 +995,36 @@ function enhanceBlocks() {
       showStatus({ level: "warn", title: "썸네일 갱신 중…", lines: [`${folder}`] });
       try {
         const result = await call("refresh_thumb", folder, 640);
+
+        // 공통 헬퍼: DOM에서 썸네일 완전히 제거
+        const removeThumbDom = () => {
+          if (thumbWrap) {
+            thumbWrap.remove();
+            thumbWrap = null;
+          }
+        };
+
         if (result?.ok) {
-          // 백엔드가 알려주는 사용 소스 타입(image/pdf/video)을 상태바에 표시
-          const src = (result.source || "").toLowerCase();
+          const srcRaw = result.source ?? null;
+          const src = typeof srcRaw === "string" ? srcRaw.toLowerCase() : null;
+
+          // ✅ 소스가 없다고 응답한 경우 (예: source:null) → 썸네일 제거 모드
+          if (!src) {
+            removeThumbDom();
+
+            // DOM에서 썸네일 제거한 상태를 master_content/master_index에 저장
+            queueMetaSave();
+
+            showStatus({
+              level: "ok",
+              title: "썸네일 제거 완료",
+              lines: [folder],
+              autoHideMs: 1800,
+            });
+            return;
+          }
+
+          // ✅ 정상 생성 케이스: 백엔드가 알려주는 사용 소스 타입(image/pdf/video)을 상태바에 표시
           const srcLabel =
             src === "image" ? "이미지" :
               src === "pdf" ? "PDF" :
@@ -964,20 +1036,61 @@ function enhanceBlocks() {
             lines.push(`사용 소스: ${srcLabel}`);
           }
 
-          // 현재 카드의 썸네일 이미지를 강제로 리로드(캐시 무시)
-          if (thumbWrap) {
-            const img = thumbWrap.querySelector("img");
-            if (img && img.src) {
-              try {
-                const url = new URL(img.src, window.location.href);
-                url.searchParams.set("_ts", Date.now().toString());
-                img.src = url.toString();
-              } catch {
-                // URL 파싱 실패 시, 단순 쿼리스트링 덧붙이기 폴백
-                img.src = img.src.split("#")[0].split("?")[0] + `?ts=${Date.now()}`;
-              }
+          // ✅ 썸네일 DOM이 없던 카드라면 새로 생성
+          if (!thumbWrap) {
+            const head = $(".card-head", div);
+            if (head) {
+              thumbWrap = document.createElement("div");
+              thumbWrap.className = "thumb-wrap";
+              const imgEl = document.createElement("img");
+              imgEl.className = "thumb";
+              imgEl.alt = "썸네일";
+              thumbWrap.appendChild(imgEl);
+              head.appendChild(thumbWrap);
             }
           }
+
+          // ✅ img 엘리먼트 확보(없으면 새로 만듦)
+          let img = thumbWrap && thumbWrap.querySelector("img");
+          if (!img && thumbWrap) {
+            img = document.createElement("img");
+            img.className = "thumb";
+            img.alt = "썸네일";
+            thumbWrap.appendChild(img);
+          }
+
+          if (img) {
+            const ts = Date.now().toString();
+
+            // 1) 기본값은 기존 data-thumb-src (이미 enhanceBlocks에서 정리해둔 값)
+            let storedSrc = img.getAttribute("data-thumb-src");
+
+            // 2) 혹시 없으면 현재 src에서 다시 추출 시도
+            if (!storedSrc) {
+              let raw = img.getAttribute("src") || "";
+              raw = raw.split("?")[0];
+              raw = raw
+                .replace(/^(\.\.\/)+resource\//, "")
+                .replace(/^\.\/?resource\//, "")
+                .replace(/^resource\//, "");
+              if (/\/thumbs\/[^\/]+\.(jpe?g|png|webp)$/i.test(raw)) {
+                storedSrc = raw;
+              }
+            }
+
+            // 3) 그래도 없으면 최후 fallback으로 folder 기반 추정
+            if (!storedSrc) {
+              storedSrc = `${folder}/thumbs/${folder}.jpg`;
+            }
+
+            img.setAttribute("data-thumb-src", storedSrc);
+            const displaySrc = `../../resource/${storedSrc}?_ts=${ts}`;
+            img.src = displaySrc;
+          }
+
+          // ✅ 썸네일 변경 내용을 바로 master_content/master_index에 반영
+          //   (소스가 없는 경우 썸네일 DOM 제거까지 포함한 상태로 저장)
+          queueMetaSave();
 
           showStatus({
             level: "ok",
@@ -986,7 +1099,30 @@ function enhanceBlocks() {
             autoHideMs: 1800,
           });
         } else {
-          const hint = result?.error ? [result.error] : ["소스 이미지 없음 또는 변환 실패"];
+          const msg = result?.error || "";
+          const isNoSource =
+            /소스 이미지 없음/.test(msg) ||
+            /no source/i.test(msg);
+
+          // ✅ 소스가 없어서 실패한 경우라도, 의도적으로 파일을 지운 상황일 수 있으니
+          //    썸네일 DOM은 제거하고 "실패" 대신 "제거 완료"로 처리
+          if (isNoSource) {
+            removeThumbDom();
+
+            // 이 경우도 DOM에서 지운 걸 디스크에 반영
+            queueMetaSave();
+
+            showStatus({
+              level: "ok",
+              title: "썸네일 제거 완료",
+              lines: [folder],
+              autoHideMs: 1800,
+            });
+            return;
+          }
+
+          // 그 외 진짜 에러는 기존처럼 오류로 표시
+          const hint = msg ? [msg] : ["소스 이미지 없음 또는 변환 실패"];
           showStatus({
             level: "error",
             title: "썸네일 갱신 실패",
@@ -1049,7 +1185,21 @@ function serializeMaster() {
     if (thumbWrapEl) {
       const tw = thumbWrapEl.cloneNode(true);
       tw.removeAttribute("contenteditable");
-      tw.querySelectorAll("[contenteditable]").forEach(el => el.removeAttribute("contenteditable"));
+      tw.querySelectorAll("[contenteditable]").forEach(el =>
+        el.removeAttribute("contenteditable")
+      );
+
+      // 썸네일 img는 표시용 src(../../resource/...)가 아니라
+      //     data-thumb-src에 저장된 "폴더/thumbs/폴더.jpg" 형태로 되돌려서 저장
+      // 저장할 때도 다음 로딩에서 바로 올바른 위치를 읽도록
+      //    backend/ui/index.html 기준 상대경로(../../resource/...)로 저장
+      tw.querySelectorAll("img.thumb, img[alt='썸네일']").forEach(img => {
+        const storedSrc = img.getAttribute("data-thumb-src");
+        if (storedSrc) {
+          img.setAttribute("src", `../../resource/${storedSrc}`);
+        }
+      });
+
       clean.appendChild(tw);
     }
 

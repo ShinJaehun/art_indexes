@@ -134,22 +134,32 @@ def inject_thumbs_for_preview(html: str, resource_dir: Path) -> str:
 
         head = div.find(class_="card-head") or div
 
-        # 영역 정리
+        # 영역 정리: thumb-wrap 위치/중복 정돈
         _dedupe_and_confine_thumb_wrap(soup, div)
 
         fs_exists = _fs_thumb_exists(resource_dir, card_name)
         tw = head.find("div", class_="thumb-wrap")
 
+        # 🔹 썸네일 파일이 더 이상 없으면, 기존 thumb-wrap 자체를 제거한다.
+        #    (예전 썸네일 <img>가 남아 있어도 강제로 정리해서 캐시 이미지가 계속 보이지 않도록)
+        if not fs_exists:
+            if tw:
+                tw.decompose()
+            continue
+
+        # 🔹 여기부터는 "FS에 썸네일이 실제로 존재"하는 경우만 처리
+
         # tw가 없고 FS가 있을 때만 새로 만든다
-        if not tw and fs_exists:
+        if not tw:
             tw = soup.new_tag("div", **{"class": "thumb-wrap"})
             head.append(tw)
 
         if tw:
             _append_fs_thumb_if_missing(soup, tw, card_name, resource_dir)
-            # 여전히 비어 있으면 제거
+            # 여전히 비어 있으면 제거 (방어 코드)
             if not tw.find("img", class_="thumb"):
                 tw.decompose()
+
     return str(soup)
 
 

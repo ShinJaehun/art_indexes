@@ -19,35 +19,6 @@ PDFTOPPM_EXE = BIN_DIR / "poppler" / "pdftoppm.exe"  # bin/poppler
 PDFINFO_EXE = BIN_DIR / "poppler" / "pdfinfo.exe"  # 페이지 수 조회용
 
 
-def _imports(self):
-    try:
-        from .htmlops import (
-            extract_inner_html_only,
-            adjust_paths_for_folder,
-            strip_back_to_master,
-        )
-        from .builder import render_master_index, render_child_index
-        from .thumbs import _safe_name as _thumb_safe_name
-    except ImportError:
-        # 스크립트 모드 대비
-        from htmlops import (
-            extract_inner_html_only,
-            adjust_paths_for_folder,
-            strip_back_to_master,
-        )
-        from builder import render_master_index, render_child_index
-        from thumbs import _safe_name as _thumb_safe_name
-
-    return (
-        extract_inner_html_only,
-        adjust_paths_for_folder,
-        strip_back_to_master,
-        render_master_index,
-        render_child_index,
-        _thumb_safe_name,
-    )
-
-
 def _run(cmd: list[str]) -> tuple[int, str, str]:
     """
     모든 외부 도구 호출의 출력은 바이너리로 받고, UTF-8로 디코드(errors='ignore').
@@ -249,51 +220,86 @@ def make_video_thumb(video_path: Path, out_jpg: Path, width: int = 640) -> bool:
             pass
 
 
-def make_thumbnail_for_folder(
-    folder: Path, max_width: int = 640
-) -> tuple[bool, str | None]:
+def _find_capture_candidate(folder: Path) -> tuple[str | None, Path | None]:
+    """
+    폴더 내 썸네일 캡처 후보 탐색:
+      1) 이미지(.png/.jpg/.jpeg/.webp)
+      2) PDF
+      3) MP4
+    반환: (kind, Path)  예) ("image", Path(...)) / (None, None)
+    """
     # 1) 대표 이미지
     for ext in (".png", ".jpg", ".jpeg", ".webp"):
         img = next(folder.glob(f"*{ext}"), None)
         if img:
-            try:
-                from PIL import Image
-
-                out = folder / "thumbs" / f"{_safe_name(folder.name)}.jpg"
-                out.parent.mkdir(exist_ok=True)
-
-                with Image.open(img) as im:
-                    w, h = im.size
-                    if w > max_width:
-                        im = im.resize(
-                            (max_width, int(h * (max_width / w))), Image.LANCZOS
-                        )
-                    buf = BytesIO()
-                    im.convert("RGB").save(buf, "JPEG", quality=88, optimize=True)
-                    atomic_write_bytes(str(out), buf.getvalue())
-
-                print(f"[thumb] OK (image): {out}")
-                return True, "image"
-            except Exception as e:
-                print(f"[thumb] image resize FAIL: {e}", file=sys.stderr)
-            break
+            return "image", img
 
     # 2) PDF
     pdf = next(folder.glob("*.pdf"), None)
     if pdf:
-        out = folder / "thumbs" / f"{_safe_name(folder.name)}.jpg"
-        if make_pdf_thumb(pdf, out):
-            return True, "pdf"
+        return "pdf", pdf
 
     # 3) VIDEO
     mp4 = next(folder.glob("*.mp4"), None)
     if mp4:
-        out = folder / "thumbs" / f"{_safe_name(folder.name)}.jpg"
-        if make_video_thumb(mp4, out, width=max_width):
-            return True, "video"
+        return "video", mp4
 
-    print(f"[thumb] SKIP (no source): {folder.name}")
-    return False, None
+    return None, None
+
+
+def make_thumbnail_for_folder(
+    folder: Path, max_width: int = 640
+) -> tuple[bool, str | None]:
+    """
+    폴더 하나에 대해 썸네일을 한 번 생성/갱신한다.
+    - 캡처 대상이 없으면 아무 작업도 하지 않고 (False, None) 반환
+    - 성공 시 (True, "image"|"pdf"|"video") 반환
+
+    ⚠️ 기존 썸네일 삭제는 여기서 하지 않는다.
+       - sync 전체 스캔: scan_and_make_thumbs()
+       - 개별 강제 갱신: MasterApi.refresh_thumb()
+       쪽에서 정책에 따라 삭제 처리.
+    """
+    kind, src = _find_capture_candidate(folder)
+    if not src:
+        print(f"[thumb] SKIP (no source): {folder.name}")
+        return False, None
+
+    out = folder / "thumbs" / f"{_safe_name(folder.name)}.jpg"
+
+    if kind == "image":
+        try:
+            from PIL import Image
+
+            out.parent.mkdir(exist_ok=True)
+
+            with Image.open(src) as im:
+                w, h = im.size
+                if w > max_width:
+                    im = im.resize((max_width, int(h * (max_width / w))), Image.LANCZOS)
+                buf = BytesIO()
+                im.convert("RGB").save(buf, "JPEG", quality=88, optimize=True)
+                atomic_write_bytes(str(out), buf.getvalue())
+
+            print(f"[thumb] OK (image): {out}")
+            return True, "image"
+        except Exception as e:
+            print(f"[thumb] image resize FAIL: {e}", file=sys.stderr)
+            return False, "image"
+
+    if kind == "pdf":
+        if make_pdf_thumb(src, out):
+            return True, "pdf"
+        return False, "pdf"
+
+    if kind == "video":
+        if make_video_thumb(src, out, width=max_width):
+            return True, "video"
+        return False, "video"
+
+    # 이론상 도달하지 않음
+    print(f"[thumb] FAIL (unknown kind={kind}): {folder.name}", file=sys.stderr)
+    return False, kind
 
 
 def _iter_content_folders(resource_dir: Path):
@@ -315,16 +321,44 @@ def scan_and_make_thumbs(
 ) -> bool:
     """
     resource/<폴더>들을 훑어 썸네일만 생성/갱신한다.
-    - HTML 파일은 생성하지 않음(SSOT 안전).
-    - 일부 폴더에 소스가 없어도 전체 작업은 성공(True)로 본다.
+    - refresh=False 이면:
+        * 캡처 후보가 없고, 기존 썸네일이 있으면 → 썸네일 삭제
+        * 캡처 후보는 있는데 썸네일이 이미 있으면 → 그대로 유지(성능 세이브)
+        * 썸네일이 없고 캡처 후보가 있으면 → 1회 생성
+    - refresh=True 이면:
+        * 캡처 후보가 있으면 항상 새로 캡처(기존 썸네일 덮어쓰기)
+        * 캡처 후보가 없으면 기존 썸네일만 삭제
     """
     resource_dir = Path(resource_dir)
     any_error = False
 
     for folder in _iter_content_folders(resource_dir):
         try:
+            kind, src = _find_capture_candidate(folder)
+            safe_name = _safe_name(folder.name)
+            thumb_file = folder / "thumbs" / f"{safe_name}.jpg"
+
+            # 1) 캡처 후보 없음 → 기존 썸네일이 있다면 삭제
+            if not src:
+                if thumb_file.exists():
+                    try:
+                        thumb_file.unlink()
+                        print(f"[thumb] removed orphan thumb (no source): {thumb_file}")
+                    except Exception as e:
+                        print(
+                            f"[thumb] WARN: failed to remove orphan thumb {thumb_file}: {e}",
+                            file=sys.stderr,
+                        )
+                        any_error = True
+                continue
+
+            # 2) 후보는 있는데, refresh=False 이고 썸네일이 이미 있으면 → 그대로 유지
+            if not refresh and thumb_file.exists():
+                continue
+
+            # 3) 이외의 경우에만 실제 썸네일 생성/갱신
             ok, _src = make_thumbnail_for_folder(folder, max_width=width)
-            # ok=False (소스 없음/도구 미설치 등)은 전체 스캔 실패로 보지 않고 넘어감
+            # ok=False(변환 실패 등)는 전체 스캔 실패로 보지 않고 넘어감
         except Exception as e:
             print(f"[thumb] ERROR in {folder.name}: {e}", file=sys.stderr)
             any_error = True

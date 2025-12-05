@@ -290,20 +290,6 @@ class MasterApi:
             "errors": errors or None,
         }
 
-    # --- 카드 정렬 키 (중첩함수 제거 → 클래스 메서드) ---
-    def _card_sort_key(self, card: Dict[str, Any]) -> Tuple[int, str]:
-        """
-        master_index 렌더링 시 정렬 키: (order 기본 1000, title 소문자)
-        """
-        try:
-            order_value = (
-                int(card.get("order")) if card.get("order") not in (None, "") else 1000
-            )
-        except Exception:
-            order_value = 1000
-        title_key = (card.get("title") or "").lower()
-        return (order_value, title_key)
-
     # ---- 푸시: master_content → resource/*.html ----
     def _push_master_to_resource(self) -> int:
         master_content = self._p_master_content()
@@ -1178,27 +1164,40 @@ class MasterApi:
         folder_path = self._p_resource_dir() / folder_name
         thumbs_dir = folder_path / "thumbs"
         try:
+            if not folder_path.exists() or not folder_path.is_dir():
+                return {
+                    "ok": False,
+                    "error": f"폴더가 존재하지 않습니다: {folder_name}",
+                }
+
             if thumbs_dir.exists() and thumbs_dir.is_file():
                 return {
                     "ok": False,
                     "error": f"'thumbs' 경로가 파일입니다: {thumbs_dir}. 폴더로 복구해 주세요.",
                 }
 
-            ok, src = make_thumbnail_for_folder(folder_path, max_width=width)
-            if ok:
-                # P5-썸네일 v2:
-                # - 성공 시 registry에 thumb_source 기록
-                # - 항상 thumbs/<폴더이름>.jpg 로 덮어쓰기 (thumbs.py 쪽에서 이미 수행)
-                try:
-                    # 폴더 ↔ 카드 ID 매핑 보장
-                    folder_id_map = ensure_card_ids(self._p_resource_dir())
-                except Exception as exc:
-                    folder_id_map = {}
-                    print(
-                        f"[thumb] WARN: ensure_card_ids failed in refresh_thumb: {exc}"
-                    )
+            # 썸네일 파일 경로 계산(폴더 이름 기반 safe name)
+            try:
+                from .thumbs import _safe_name as _thumb_safe_name
+            except Exception:
+                from thumbs import _safe_name as _thumb_safe_name
 
-                card_id = folder_id_map.get(folder_name)
+            safe_name = _thumb_safe_name(folder_name)
+            thumb_file = thumbs_dir / f"{safe_name}.jpg"
+
+            # 폴더 ↔ 카드 ID 매핑(성공/실패 모두에서 사용)
+            try:
+                folder_id_map = ensure_card_ids(self._p_resource_dir())
+            except Exception as exc:
+                folder_id_map = {}
+                print(f"[thumb] WARN: ensure_card_ids failed in refresh_thumb: {exc}")
+
+            card_id = folder_id_map.get(folder_name)
+
+            ok, src = make_thumbnail_for_folder(folder_path, max_width=width)
+
+            if ok:
+                # 성공: registry에 thumb_source 기록
                 if card_id:
                     try:
                         self._registry.upsert_item(
@@ -1210,14 +1209,56 @@ class MasterApi:
                         print(
                             f"[thumb] WARN: registry update failed for {folder_name}: {exc}"
                         )
-
                 return {"ok": True, "source": src}
 
-            else:
+            # === ok=False 케이스 ===
+            # src == None  → 캡처 가능한 소스가 전혀 없음(이미지/PDF/VIDEO 모두 X)
+            # src != None  → 포맷 문제, 권한 문제 등 "진짜 에러"
+
+            thumb_deleted = False
+            if thumb_file.exists():
+                try:
+                    thumb_file.unlink()
+                    thumb_deleted = True
+                    print(
+                        f"[thumb] removed thumb for '{folder_name}' (no source or error): {thumb_file}"
+                    )
+                except Exception as exc:
+                    print(
+                        f"[thumb] WARN: failed to delete thumb for {folder_name}: {exc}"
+                    )
+
+            # 레지스트리에서도 thumb_source 정리
+            if card_id:
+                try:
+                    self._registry.upsert_item(
+                        card_id=card_id,
+                        folder=folder_name,
+                        thumb_source=None,
+                    )
+                except Exception as exc:
+                    print(
+                        f"[thumb] WARN: registry update(clear) failed for {folder_name}: {exc}"
+                    )
+
+            # 🔹 소스가 전혀 없는 경우(src is None)는 "정상 편집"으로 간주 (에러 X)
+            if src is None:
                 return {
-                    "ok": False,
-                    "error": "썸네일 생성 실패(소스 이미지 없음, 포맷 미지원, 또는 권한 문제)",
+                    "ok": True,
+                    "source": None,
+                    "deleted": thumb_deleted,
                 }
+
+            # 🔹 여기까지 왔다면 포맷/권한 등 진짜 실패
+            msg = "썸네일 생성 실패(포맷 미지원 또는 권한 문제)"
+            if thumb_deleted:
+                msg += " — 기존 썸네일을 삭제했습니다."
+
+            return {
+                "ok": False,
+                "error": msg,
+            }
+
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 

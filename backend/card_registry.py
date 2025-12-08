@@ -252,6 +252,7 @@ class CardRegistry:
         soup = BeautifulSoup(html, "html.parser")
         cards = soup.find_all("div", class_="card")
 
+        # 기존 레지스트리(load) 후 id → item 매핑
         reg = self.load()
         items_by_id: Dict[str, Dict[str, Any]] = {}
         for item in reg.get("items", []):
@@ -261,6 +262,7 @@ class CardRegistry:
 
         for card_div in cards:
             card_id = (card_div.get("data-card-id") or "").strip()
+
             if not card_id:
                 title_el = card_div.find("h2")
                 title_txt = (title_el.get_text(strip=True) if title_el else "").strip()
@@ -269,6 +271,7 @@ class CardRegistry:
                 )
                 continue
 
+            # master_content 안의 data-card / data-created-at / hidden / order 메타 추출
             folder = (card_div.get("data-card") or "").strip()
 
             title_el = card_div.find("h2")
@@ -284,7 +287,29 @@ class CardRegistry:
             except ValueError:
                 order = None
 
+            # P5: created_at 백필
+            #  1) 카드에 data-created-at 이 있으면 그대로 우선 사용
+            #  2) 없고 folder 가 있으면, 파일시스템 폴더 mtime으로 한 번 채움
+            #  3) 기존 레지스트리에 created_at 이 이미 있으면 절대 덮어쓰지 않음
+            created_at_val: Optional[str] = None
+            raw_created = (card_div.get("data-created-at") or "").strip()
+            if raw_created:
+                created_at_val = raw_created
+            elif folder:
+                try:
+                    folder_path = self._resource_dir / folder
+                    if folder_path.exists() and folder_path.is_dir():
+                        ts = folder_path.stat().st_mtime
+                        dt = datetime.fromtimestamp(ts).astimezone()
+                        created_at_val = dt.isoformat(timespec="seconds")
+                except Exception:
+                    created_at_val = None
+
+            # 기존 레코드 가져오기(없으면 새 dict)
             item = items_by_id.get(card_id, {})
+            existing_created_at = item.get("created_at")
+
+            # 기본 필드 업데이트 (folder/title/hidden)
             item.update(
                 {
                     "id": card_id,
@@ -293,8 +318,13 @@ class CardRegistry:
                     "hidden": hidden,
                 }
             )
+
             if order is not None:
                 item["order"] = order
+
+            # created_at은 "없을 때만" 채운다(한 번 기록되면 그대로 유지)
+            if not existing_created_at and created_at_val:
+                item["created_at"] = created_at_val
 
             items_by_id[card_id] = item
 

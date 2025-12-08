@@ -217,6 +217,21 @@ class MasterApi:
                     tag[attr] = f"../../{value}"
         return str(soup)
 
+    def _strip_empty_placeholder(self, html: str) -> str:
+        """
+        예전 버전에서 master_content 맨 앞에 남겨 둔
+        '<p>내용 없음</p>' 플레이스홀더를 제거한다.
+
+        - 완전히 비어 있는 경우는 그대로 둔다.
+        - 맨 앞에 단독으로 붙어 있는 경우에만 한 번 제거한다.
+        """
+        if not html:
+            return html
+        try:
+            return re.sub(r"^\s*<p>내용 없음</p>\s*", "", html, count=1)
+        except Exception:
+            return html
+
     # ---- 로드 / 저장 ----
     def get_master(self) -> Dict[str, Any]:
         """
@@ -228,6 +243,7 @@ class MasterApi:
 
         if master_content.exists():
             raw_html = self._read(master_content)
+            raw_html = self._strip_empty_placeholder(raw_html)
             html_for_view = inject_thumbs_for_preview(raw_html, self._p_resource_dir())
             html_for_view = self._prefix_resource_for_ui(html_for_view)
             return {"html": html_for_view}
@@ -270,6 +286,9 @@ class MasterApi:
                         anchor["href"] = f"https://{href}"
 
             fixed_html = str(soup)
+
+        # 과거에 저장된 '<p>내용 없음</p>' 같은 플레이스홀더는 실제 master_content에서는 제거
+        fixed_html = self._strip_empty_placeholder(fixed_html)
 
         # 1) master_content 저장
         self._write(self._p_master_content(), fixed_html)

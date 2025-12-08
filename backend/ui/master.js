@@ -469,7 +469,20 @@ async function loadMaster() {
   try {
     if (hasBridge) {
       const { html } = await call("get_master");
-      $("#content").innerHTML = html || "<p>내용 없음</p>";
+
+      // 1) master_content에서 온 html만 그대로 반영
+      $("#content").innerHTML = html || "";
+
+      // 2) 완전 빈 상태면, "안내만" statusBar 등으로 띄우고
+      //    #content 안에는 아무것도 안 넣는다(→ 나중에 저장돼도 쓰레기 안 남음)
+      if (!html) {
+        showStatus({
+          level: "warn",
+          title: "아직 카드가 없습니다",
+          lines: ["Sync 버튼을 눌러 resource/ 폴더를 스캔해 보세요."],
+          autoHideMs: 4000,
+        });
+      }
     } else {
       const blocks = $$(".card", document);
       $("#content").innerHTML = "";
@@ -708,8 +721,10 @@ function enhanceBlocks() {
     const inner = $(".inner", div);
 
     // URL 오토링크 + 버튼화(초기 표시 시 1회)
-    autoLinkify(inner);
-    decorateExternalLinks(inner);
+    if (inner) {
+      autoLinkify(inner);
+      decorateExternalLinks(inner);
+    }
 
     const folder = div.getAttribute("data-card") || (title?.textContent || "").trim();
     const btnEditOne = $(".btnEditOne", actions);
@@ -792,7 +807,12 @@ function enhanceBlocks() {
     }
 
     // --- 붙여넣기 핸들러 (중복 제거, escape 유틸 사용) ---
-    if (inner && !inner.__pasteWired) {
+    if (!inner) {
+      div.__enhanced = true;
+      return;
+    }
+
+    if (!inner.__pasteWired) {
       inner.addEventListener("paste", (evt) => {
         try {
           if (!evt.clipboardData) return;
@@ -989,6 +1009,11 @@ function enhanceBlocks() {
     };
 
     // 썸네일 갱신 (P5-썸네일 v2: 타입 순환 + 즉시 썸네일 리로드)
+    if (!btnThumb) {
+      div.__enhanced = true;
+      return;
+    }
+
     btnThumb.onclick = async () => {
       if (!hasBridge) return alert("데스크톱 앱에서만 가능합니다.");
       btnThumb.disabled = true;

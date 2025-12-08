@@ -18,9 +18,9 @@ except Exception:
     from lockutil import SyncLock, SyncLockError
 
 try:
-    from .thumbs import make_thumbnail_for_folder
+    from .thumbs import make_thumbnail_for_folder, has_ffmpeg, has_poppler
 except Exception:
-    from thumbs import make_thumbnail_for_folder
+    from thumbs import make_thumbnail_for_folder, has_ffmpeg, has_poppler
 
 try:
     # ensure_css_assets 포함하여 가져옴
@@ -697,6 +697,44 @@ class MasterApi:
                     reg = self._registry.bootstrap_from_master(self._p_master_content())
                     if isinstance(reg, dict):
                         metrics["idRegistryItems"] = len(reg.get("items", []))
+
+                        # P5: 썸네일 실존 여부에 맞게 thumb_source 정리
+                        items = reg.get("items") or []
+                        resource_dir = self._p_resource_dir()
+
+                        try:
+                            from .thumbs import _safe_name as _thumb_safe_name
+                        except Exception:
+                            from thumbs import _safe_name as _thumb_safe_name
+
+                        for item in items:
+                            cid = (item.get("id") or "").strip()
+                            folder = (item.get("folder") or "").strip()
+                            if not cid or not folder:
+                                continue
+
+                            safe_name = _thumb_safe_name(folder)
+                            thumb_file = (
+                                resource_dir / folder / "thumbs" / f"{safe_name}.jpg"
+                            )
+
+                            # 1) 썸네일 파일이 없는데 thumb_source가 남아 있으면 → None으로 클리어
+                            if (not thumb_file.exists()) and item.get("thumb_source"):
+                                try:
+                                    self._registry.upsert_item(
+                                        card_id=cid,
+                                        folder=folder,
+                                        thumb_source=None,
+                                    )
+                                    print(
+                                        f"[registry] cleared thumb_source for id={cid} "
+                                        f"(folder={folder}, file missing)"
+                                    )
+                                except Exception as exc2:
+                                    msg = f"레지스트리 thumb_source 정리 실패(id={cid}): {exc2}"
+                                    print(f"[registry] {msg}")
+                                    errors.append(msg)
+
                 except Exception as exc:
                     errors.append(f"ID 레지스트리 갱신 실패: {exc}")
                     print(f"[registry] refresh failed: {exc}")
@@ -1209,7 +1247,11 @@ class MasterApi:
                         print(
                             f"[thumb] WARN: registry update failed for {folder_name}: {exc}"
                         )
-                return {"ok": True, "source": src}
+                return {
+                    "ok": True,
+                    "source": src,
+                    "source_type": src,
+                }
 
             # === ok=False 케이스 ===
             # src == None  → 캡처 가능한 소스가 전혀 없음(이미지/PDF/VIDEO 모두 X)
@@ -1241,26 +1283,52 @@ class MasterApi:
                         f"[thumb] WARN: registry update(clear) failed for {folder_name}: {exc}"
                     )
 
-            # 🔹 소스가 전혀 없는 경우(src is None)는 "정상 편집"으로 간주 (에러 X)
+            # 1) 캡처 후보 자체가 없는 경우(src is None)
+            #    → 정상적인 "제거" 케이스로 간주: 오류 아님
             if src is None:
                 return {
                     "ok": True,
                     "source": None,
+                    "source_type": None,
+                    "deleted": thumb_deleted,
+                }
+            # 2) 캡처 후보는 있었지만, 필수 도구(ffmpeg/poppler)가 없어서 실패한 경우
+            #    → 이것도 "조용한 스킵"으로 처리 (에러 X, 썸네일만 제거되었을 수 있음)
+            if src == "video" and not has_ffmpeg():
+                return {
+                    "ok": True,
+                    "source": None,
+                    "source_type": None,
                     "deleted": thumb_deleted,
                 }
 
-            # 🔹 여기까지 왔다면 포맷/권한 등 진짜 실패
+            if src == "pdf" and not has_poppler():
+                return {
+                    "ok": True,
+                    "source": None,
+                    "source_type": None,
+                    "deleted": thumb_deleted,
+                }
+
+            # 3) 여기까지 왔다면 도구는 있는데, 실제 변환이 실패한 "진짜 에러"
             msg = "썸네일 생성 실패(포맷 미지원 또는 권한 문제)"
             if thumb_deleted:
                 msg += " — 기존 썸네일을 삭제했습니다."
 
-            return {
+            result: Dict[str, Any] = {
                 "ok": False,
                 "error": msg,
+                "source_type": src,
             }
+            if thumb_deleted:
+                result["deleted"] = True
+            return result
 
         except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+            return {
+                "ok": False,
+                "error": str(exc),
+            }
 
     # --- Diff & Dry-run ---
     def diff_and_report(self, *, include_thumbs: bool = True) -> dict:

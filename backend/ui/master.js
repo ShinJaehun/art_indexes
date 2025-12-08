@@ -691,7 +691,7 @@ function enhanceBlocks() {
           if (folderName) {
             // ★ 여기서는 예전 동작과의 하위호환용 "추정값"일 뿐,
             //    실제로는 대부분 위의 raw 경로에서 이미 구해질 것이다.
-            storedSrc = `${folderName}/thumbs/${folderName}.jpg`;
+            storedSrc = `${folderName}/thumbs/${safeThumbName(folderName)}.jpg`;
           }
         }
 
@@ -1080,7 +1080,7 @@ function enhanceBlocks() {
 
             // 3) 그래도 없으면 최후 fallback으로 folder 기반 추정
             if (!storedSrc) {
-              storedSrc = `${folder}/thumbs/${folder}.jpg`;
+              storedSrc = `${folder}/thumbs/${safeThumbName(folder)}.jpg`;
             }
 
             img.setAttribute("data-thumb-src", storedSrc);
@@ -1100,18 +1100,15 @@ function enhanceBlocks() {
           });
         } else {
           const msg = result?.error || "";
+
+          // 이전 버전 호환용 (예전 서버가 "소스 이미지 없음" 문구를 줄 수도 있으니)
           const isNoSource =
             /소스 이미지 없음/.test(msg) ||
             /no source/i.test(msg);
 
-          // ✅ 소스가 없어서 실패한 경우라도, 의도적으로 파일을 지운 상황일 수 있으니
-          //    썸네일 DOM은 제거하고 "실패" 대신 "제거 완료"로 처리
           if (isNoSource) {
             removeThumbDom();
-
-            // 이 경우도 DOM에서 지운 걸 디스크에 반영
             queueMetaSave();
-
             showStatus({
               level: "ok",
               title: "썸네일 제거 완료",
@@ -1121,12 +1118,30 @@ function enhanceBlocks() {
             return;
           }
 
-          // 그 외 진짜 에러는 기존처럼 오류로 표시
+          // 🔹 새 디버그 정보: source_type + tool
+          const kindRaw = (result?.source_type || result?.source || "").toLowerCase();
+          let srcLabel = null;
+          if (kindRaw === "image") srcLabel = "이미지";
+          else if (kindRaw === "pdf") srcLabel = "PDF";
+          else if (kindRaw === "video") srcLabel = "동영상";
+
+          const tool = result?.tool || null;
+
+          const lines = [folder];
+          if (srcLabel) {
+            lines.push(`시도한 소스: ${srcLabel}`);
+          }
+          if (tool === "ffmpeg") {
+            lines.push("필요 도구: ffmpeg (동영상 썸네일)");
+          } else if (tool === "poppler") {
+            lines.push("필요 도구: poppler (pdftoppm / pdfinfo, PDF 썸네일)");
+          }
+
           const hint = msg ? [msg] : ["소스 이미지 없음 또는 변환 실패"];
           showStatus({
             level: "error",
             title: "썸네일 갱신 실패",
-            lines: [folder],
+            lines,
             errors: hint,
           });
         }
@@ -1144,6 +1159,14 @@ function enhanceBlocks() {
 
     div.__enhanced = true;
   });
+}
+
+function safeThumbName(name) {
+  // Python _safe_name과 최대한 동일하게
+  return name
+    .normalize("NFKC")
+    .replace(/[\s\u00A0\u202F\u2009\u2007\u2060]+/g, "_")
+    .replace(/[\/\\:*?"<>|]/g, "_");
 }
 
 // 저장 직렬화: h2 + thumb-wrap + inner(본문)만 남기고, 버튼/편집속성 제거

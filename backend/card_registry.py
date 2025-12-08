@@ -15,6 +15,8 @@ try:
 except Exception:
     BeautifulSoup = None
 
+_MISSING = object()
+
 
 class CardRegistry:
     """
@@ -118,7 +120,7 @@ class CardRegistry:
         title: Optional[str] = None,
         created_at: Optional[str] = None,
         hidden: Optional[bool] = None,
-        thumb_source: Optional[str] = None,
+        thumb_source: Any = _MISSING,
     ) -> Dict[str, Any]:
         """
         주어진 card_id에 대해 레지스트리 아이템을 생성/갱신.
@@ -154,8 +156,14 @@ class CardRegistry:
             item["hidden"] = bool(hidden)
 
         # P5-썸네일 v2: 썸네일 소스 타입(image/pdf/video) 메타
-        if thumb_source is not None:
-            item["thumb_source"] = thumb_source
+        #  - 인자를 아예 안 넘긴 경우(_MISSING)는 기존 값 유지
+        #  - None/""를 넘기면 thumb_source 필드 삭제
+        #  - 그 외 값은 그대로 저장
+        if thumb_source is not _MISSING:
+            if thumb_source is None or thumb_source == "":
+                item.pop("thumb_source", None)
+            else:
+                item["thumb_source"] = str(thumb_source)
 
         data["items"] = items
         self.save(data)

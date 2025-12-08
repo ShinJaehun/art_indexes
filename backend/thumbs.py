@@ -5,6 +5,7 @@ import tempfile
 import re, unicodedata
 from io import BytesIO
 import os
+import shutil
 
 try:
     from .fsutil import atomic_write_bytes
@@ -17,6 +18,26 @@ BIN_DIR = BASE_DIR / "bin"
 FFMPEG_EXE = BIN_DIR / "ffmpeg.exe"
 PDFTOPPM_EXE = BIN_DIR / "poppler" / "pdftoppm.exe"  # bin/poppler
 PDFINFO_EXE = BIN_DIR / "poppler" / "pdfinfo.exe"  # 페이지 수 조회용
+
+
+def has_ffmpeg() -> bool:
+    """
+    ffmpeg 사용 가능 여부 체크:
+    - bin/ffmpeg.exe 가 있거나
+    - PATH 에 ffmpeg 가 있으면 True
+    """
+    if FFMPEG_EXE.exists():
+        return True
+    return shutil.which("ffmpeg") is not None
+
+
+def has_poppler() -> bool:
+    """
+    poppler(pdftoppm, pdfinfo) 사용 가능 여부 체크
+    """
+    if PDFTOPPM_EXE.exists() and PDFINFO_EXE.exists():
+        return True
+    return shutil.which("pdftoppm") is not None and shutil.which("pdfinfo") is not None
 
 
 def _run(cmd: list[str]) -> tuple[int, str, str]:

@@ -217,6 +217,14 @@ class MasterApi:
                     tag[attr] = f"../../{value}"
         return str(soup)
 
+    def get_current_index_path(self) -> Dict[str, Any]:
+        """
+        현재 사용 중인 인덱스 파일(예: resource/master_index.html)의
+        절대 경로를 UI에 알려주기 위한 헬퍼.
+        """
+        master_index = self._p_resource_dir() / MASTER_INDEX
+        return {"path": str(master_index.resolve())}
+
     # ---- 로드 / 저장 ----
     def get_master(self) -> Dict[str, Any]:
         """

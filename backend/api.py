@@ -6,6 +6,8 @@ import os
 import traceback
 import shutil
 from datetime import datetime
+import platform
+import subprocess
 
 try:
     from .fsutil import atomic_write_text
@@ -224,6 +226,153 @@ class MasterApi:
         """
         master_index = self._p_resource_dir() / MASTER_INDEX
         return {"path": str(master_index.resolve())}
+
+    # ---- 카드별 자료 폴더 열기 ----------------------------------------
+    def open_folder(self, folder_name: str) -> Dict[str, Any]:
+        """
+        개별 카드가 가리키는 자료 폴더(resource/<folder_name>)를
+        OS 탐색기에서 연다.
+        """
+        try:
+            if not folder_name:
+                return {"ok": False, "error": "folder_name 이 비어 있습니다."}
+
+            target = self._p_resource_dir() / folder_name
+            if not target.exists() or not target.is_dir():
+                return {
+                    "ok": False,
+                    "error": f"폴더가 존재하지 않습니다: {target}",
+                }
+
+            system = platform.system().lower()
+            if system.startswith("win"):
+                os.startfile(str(target))  # type: ignore[attr-defined]
+            elif system == "darwin":
+                subprocess.Popen(["open", str(target)])
+            else:
+                subprocess.Popen(["xdg-open", str(target)])
+
+            print(f"[open_folder] open folder={target}")
+            return {"ok": True, "path": str(target.resolve())}
+        except Exception as exc:
+            msg = f"open_folder failed: {exc}"
+            print(f"[open_folder] {msg}")
+            return {"ok": False, "error": msg}
+
+    # ---- 전체 초기화(마스터/인덱스/썸네일/레지스트리) ---------------------
+    def reset_all(self) -> Dict[str, Any]:
+        """
+        🧨 매우 파괴적인 전체 초기화:
+          - backend/master_content.html 삭제
+          - resource/master_index.html 삭제
+          - resource/**/thumbs 폴더 전부 삭제
+          - resource/**/index.html(자식 인덱스) 전부 삭제
+          - backend/.suksukidx.registry.json 삭제
+        """
+        base_dir = self._p_base_dir()
+        resource_dir = self._p_resource_dir()
+        master_content = self._p_master_content()
+        master_index = self._p_master_index()
+        registry_path = base_dir / BACKEND_DIR / ".suksukidx.registry.json"
+
+        removed = {
+            "master_content": False,
+            "master_index": False,
+            "registry": False,
+            "thumb_dirs": 0,
+            "child_indexes": 0,
+        }
+        errors: list[str] = []
+
+        stale_after = int(os.getenv("SUKSUKIDX_LOCK_STALE_AFTER", "3600"))
+
+        try:
+            # sync()와 동일한 락 사용 → 동시 실행 방지
+            with SyncLock(self._lock_path, stale_after=stale_after):
+                # 1) master_content / master_index 삭제
+                try:
+                    if master_content.exists():
+                        master_content.unlink()
+                        removed["master_content"] = True
+                except Exception as exc:
+                    msg = f"master_content 삭제 실패: {exc}"
+                    print(f"[reset] {msg}")
+                    errors.append(msg)
+
+                try:
+                    if master_index.exists():
+                        master_index.unlink()
+                        removed["master_index"] = True
+                except Exception as exc:
+                    msg = f"master_index 삭제 실패: {exc}"
+                    print(f"[reset] {msg}")
+                    errors.append(msg)
+
+                # 2) thumbs 디렉토리 전체 삭제
+                try:
+                    for p in resource_dir.rglob("thumbs"):
+                        if p.is_dir():
+                            shutil.rmtree(p)
+                            removed["thumb_dirs"] += 1
+                except Exception as exc:
+                    msg = f"thumbs 삭제 중 오류: {exc}"
+                    print(f"[reset] {msg}")
+                    errors.append(msg)
+
+                # 3) child index.html 전부 삭제
+                try:
+                    for p in resource_dir.rglob("index.html"):
+                        try:
+                            p.unlink()
+                            removed["child_indexes"] += 1
+                        except Exception as exc2:
+                            msg = f"index.html 삭제 실패({p}): {exc2}"
+                            print(f"[reset] {msg}")
+                            errors.append(msg)
+                except Exception as exc:
+                    msg = f"index.html 탐색 중 오류: {exc}"
+                    print(f"[reset] {msg}")
+                    errors.append(msg)
+
+                # 4) 레지스트리 삭제
+                try:
+                    if registry_path.exists():
+                        registry_path.unlink()
+                        removed["registry"] = True
+                except Exception as exc:
+                    msg = f"레지스트리 삭제 실패: {exc}"
+                    print(f"[reset] {msg}")
+                    errors.append(msg)
+
+            print(
+                "[reset] done "
+                f"master_content={removed['master_content']} "
+                f"master_index={removed['master_index']} "
+                f"registry={removed['registry']} "
+                f"thumb_dirs={removed['thumb_dirs']} "
+                f"child_indexes={removed['child_indexes']}"
+            )
+
+        except SyncLockError as exc:
+            msg = f"LOCKED: {exc}"
+            print(f"[reset] {msg}")
+            errors.append(msg)
+            return {
+                "ok": False,
+                "locked": True,
+                "errors": errors,
+                **removed,
+            }
+        except Exception as exc:
+            msg = f"EXCEPTION: {exc}"
+            print(f"[reset] {msg}")
+            errors.append(msg)
+
+        return {
+            "ok": not errors,
+            "errors": errors or None,
+            **removed,
+        }
 
     # ---- 로드 / 저장 ----
     def get_master(self) -> Dict[str, Any]:
@@ -1404,3 +1553,30 @@ class MasterApi:
         except Exception:
             pass
         return result
+
+    def open_index_folder(self) -> dict:
+        """
+        현재 인덱스 파일이 들어 있는 폴더(resource/)를 OS 탐색기에서 연다.
+        """
+        try:
+            folder = self._p_master_index().parent  # resource 디렉토리
+            if not folder.exists() or not folder.is_dir():
+                return {
+                    "ok": False,
+                    "error": f"폴더가 존재하지 않습니다: {folder}",
+                }
+
+            system = platform.system().lower()
+            if system.startswith("win"):
+                os.startfile(str(folder))  # type: ignore[attr-defined]
+            elif system == "darwin":
+                subprocess.Popen(["open", str(folder)])
+            else:
+                subprocess.Popen(["xdg-open", str(folder)])
+
+            print(f"[open_index_folder] open folder={folder}")
+            return {"ok": True, "path": str(folder.resolve())}
+        except Exception as exc:
+            msg = f"open_index_folder failed: {exc}"
+            print(f"[open_index_folder] {msg}")
+            return {"ok": False, "error": msg}

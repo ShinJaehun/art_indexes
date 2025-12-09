@@ -766,6 +766,7 @@ function enhanceBlocks() {
           <button class="btn btnCancelOne" disabled>취소</button>
           <button class="btn btnThumb">썸네일 갱신</button>
           <button class="btn btnToggleHidden">숨김</button>
+          <button class="btn btnOpenFolder">폴더 열기</button>
           <button class="btn btnToggleDelete">삭제</button>
         `;
       } else {
@@ -784,6 +785,14 @@ function enhanceBlocks() {
             // 이론상 없겠지만, 그래도 actions 안 첫 번째에 넣어둠
             actions.insertBefore(cancelBtn, actions.firstChild);
           }
+        }
+
+        // P5: 기존 마크업에 폴더 버튼이 없다면 추가
+        if (!actions.querySelector(".btnOpenFolder")) {
+          const folderBtn = document.createElement("button");
+          folderBtn.className = "btn btnOpenFolder";
+          folderBtn.textContent = "폴더 열기";
+          actions.appendChild(folderBtn);
         }
       }
 
@@ -944,6 +953,47 @@ function enhanceBlocks() {
 
     const btnToggleHidden = $(".btnToggleHidden", actions);
     const btnDelete = $(".btnToggleDelete", actions);
+    const btnOpenFolder = $(".btnOpenFolder", actions);
+
+    // --- 카드별 폴더 열기 ---
+    if (btnOpenFolder) {
+      btnOpenFolder.onclick = async () => {
+        if (!folder) {
+          alert("이 카드에 연결된 폴더 이름을 찾을 수 없습니다.");
+          return;
+        }
+        if (!hasBridge) {
+          alert("폴더 열기는 데스크톱 앱에서만 가능합니다.");
+          return;
+        }
+        try {
+          const res = await call("open_folder", folder);
+          if (!res?.ok) {
+            const msg = res?.error || "폴더를 열 수 없습니다.";
+            showStatus({
+              level: "error",
+              title: "폴더 열기 실패",
+              lines: [msg],
+            });
+          } else {
+            // 성공 시에는 굳이 상태바에 안 띄워도 되고,
+            // 필요하면 아래처럼 한 줄 정도만:
+            showStatus({
+              level: "ok",
+              title: "폴더 열림",
+              lines: [res.path || folder],
+              autoHideMs: 2000,
+            });
+          }
+        } catch (e) {
+          showStatus({
+            level: "error",
+            title: "폴더 열기 예외",
+            lines: [String(e?.message || e)],
+          });
+        }
+      };
+    }
 
     // --- P3-2: 숨김 토글 ---
     if (btnToggleHidden) {

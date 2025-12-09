@@ -7,6 +7,7 @@ let _bridgeReadyOnce = false;
 let hasBridge = false;
 let _statusTimer = null;
 let _metaSaveTimer = null;
+let _syncInProgress = false; // P5: Sync 중복 클릭 방지 플래그
 
 // --- paste modifier 키 상태 추적 (Shift/Alt 감지) ---
 const __pasteMods = { shift: false, alt: false };
@@ -442,12 +443,26 @@ function wireGlobalToolbar() {
   const btnSync = document.querySelector("#btnSync");
   if (!btnSync || btnSync.__wired) return;
   btnSync.__wired = true;
+
+  // 초기 상태 정리
+  btnSync.disabled = false;
+  btnSync.setAttribute("aria-busy", "false");
+
   btnSync.addEventListener("click", async () => {
     if (!hasBridge) {
       return showStatus({ level: "warn", title: "데스크톱 앱에서만 동기화 가능합니다." });
     }
-    try {
 
+    // P5: 이미 동기화 중이면 클릭 무시
+    if (_syncInProgress) {
+      return;
+    }
+
+    _syncInProgress = true;
+    btnSync.disabled = true;
+    btnSync.setAttribute("aria-busy", "true");
+
+    try {
       // 1) 현재 화면 상태 저장
       await call("save_master", serializeMaster());
       // 2) 백엔드 동기화
@@ -459,8 +474,13 @@ function wireGlobalToolbar() {
     } catch (e) {
       console.error(e);
       showStatus({ level: "error", title: "동기화 실패", lines: [String(e?.message || e)] });
+    } finally {
+      _syncInProgress = false;
+      btnSync.disabled = false;
+      btnSync.setAttribute("aria-busy", "false");
     }
   });
+
 }
 
 async function loadMaster() {

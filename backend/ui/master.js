@@ -343,12 +343,10 @@ function ensureIndexPathBar() {
       <span id="indexPathText"></span>
       <span class="index-actions">
         <button id="btnOpenIndexFolder" class="btn btn-small" type="button">📂 폴더 열기</button>
-        <button id="btnResetAll" class="btn btn-small btn-danger" type="button">⚠ 전체 초기화</button>
       </span>
     `;
 
     const btnOpen = $("#btnOpenIndexFolder", bar);
-    const btnReset = $("#btnResetAll", bar);
 
     // 📂 인덱스 폴더 열기
     if (btnOpen) {
@@ -383,73 +381,6 @@ function ensureIndexPathBar() {
           showStatus({
             level: "error",
             title: "폴더 열기 예외",
-            lines: [String(e?.message || e)],
-          });
-        }
-      });
-    }
-
-    // ⚠ 전체 초기화
-    if (btnReset) {
-      btnReset.addEventListener("click", async () => {
-        if (!hasBridge) {
-          showStatus({
-            level: "warn",
-            title: "데스크톱 앱에서만 초기화할 수 있습니다.",
-          });
-          return;
-        }
-
-        const ok = window.confirm(
-          "정말 전체 초기화할까요?\n\n" +
-          "- backend/master_content.html\n" +
-          "- resource/master_index.html\n" +
-          "- resource/**/thumbs/ 폴더\n" +
-          "- resource/**/index.html 파일\n" +
-          "- backend/.suksukidx.registry.json\n\n" +
-          "이 작업은 되돌릴 수 없습니다."
-        );
-        if (!ok) return;
-
-        try {
-          showStatus({
-            level: "warn",
-            title: "전체 초기화 중…",
-          });
-
-          const r = await call("reset_all");
-          if (!r?.ok) {
-            const msg =
-              (r && (r.error || (Array.isArray(r.errors) && r.errors[0]))) ||
-              "초기화에 실패했습니다.";
-            showStatus({
-              level: "error",
-              title: "전체 초기화 실패",
-              lines: [msg],
-              errors: r?.errors || [],
-            });
-            return;
-          }
-
-          const summaryLines = [];
-          if (r.master_content) summaryLines.push("master_content.html 삭제");
-          if (r.master_index) summaryLines.push("master_index.html 삭제");
-          if (r.registry) summaryLines.push("레지스트리 삭제");
-          summaryLines.push(`thumbs 폴더 ${r.thumb_dirs || 0}곳`);
-          summaryLines.push(`child index ${r.child_indexes || 0}개`);
-
-          showStatus({
-            level: "ok",
-            title: "전체 초기화 완료",
-            lines: summaryLines,
-          });
-
-          // 비워진 상태로 다시 로드
-          await loadMaster();
-        } catch (e) {
-          showStatus({
-            level: "error",
-            title: "전체 초기화 예외",
             lines: [String(e?.message || e)],
           });
         }

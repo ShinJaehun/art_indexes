@@ -44,6 +44,7 @@ function wireExtraToolbar() {
   // 선택적: 전역 편집/저장 버튼이 있는 경우 동일한 UX 적용
   const btnEditAll = $("#btnEdit");     // 존재하면 전역 편집 시작
   const btnSaveAll = $("#btnSaveAll");  // 존재하면 전역 저장
+  const btnResetAll = $("#btnResetAll"); // ⚠ 전체 초기화 (global toolbar)
 
   const sortField = $("#sortField");
   const btnSortAsc = $("#btnSortAsc");
@@ -79,6 +80,74 @@ function wireExtraToolbar() {
         console.error(e); alert("실패");
       } finally {
         btnRegenAll.disabled = false;
+      }
+    });
+  }
+
+
+  // ⚠ 전체 초기화 (reset_all 호출)
+  if (btnResetAll) {
+    btnResetAll.addEventListener("click", async () => {
+      if (!hasBridge) {
+        showStatus({
+          level: "warn",
+          title: "데스크톱 앱에서만 초기화할 수 있습니다.",
+        });
+        return;
+      }
+
+      const ok = window.confirm(
+        "정말 전체 초기화할까요?\n\n" +
+        "- backend/master_content.html\n" +
+        "- resource/master_index.html\n" +
+        "- resource/**/thumbs/ 폴더\n" +
+        "- resource/**/index.html 파일\n" +
+        "- backend/.suksukidx.registry.json\n\n" +
+        "이 작업은 되돌릴 수 없습니다."
+      );
+      if (!ok) return;
+
+      try {
+        showStatus({
+          level: "warn",
+          title: "전체 초기화 중…",
+        });
+
+        const r = await call("reset_all");
+        if (!r?.ok) {
+          const msg =
+            (r && (r.error || (Array.isArray(r.errors) && r.errors[0]))) ||
+            "초기화에 실패했습니다.";
+          showStatus({
+            level: "error",
+            title: "전체 초기화 실패",
+            lines: [msg],
+            errors: r?.errors || [],
+          });
+          return;
+        }
+
+        const summaryLines = [];
+        if (r.master_content) summaryLines.push("master_content.html 삭제");
+        if (r.master_index) summaryLines.push("master_index.html 삭제");
+        if (r.registry) summaryLines.push("레지스트리 삭제");
+        summaryLines.push(`thumbs 폴더 ${r.thumb_dirs || 0}곳`);
+        summaryLines.push(`child index ${r.child_indexes || 0}개`);
+
+        showStatus({
+          level: "ok",
+          title: "전체 초기화 완료",
+          lines: summaryLines,
+        });
+
+        // 비워진 상태로 다시 로드
+        await loadMaster();
+      } catch (e) {
+        showStatus({
+          level: "error",
+          title: "전체 초기화 예외",
+          lines: [String(e?.message || e)],
+        });
       }
     });
   }

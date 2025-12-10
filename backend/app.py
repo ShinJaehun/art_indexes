@@ -74,7 +74,8 @@ def main():
 
     # 시작 (일부 구버전 백업: js_api 인자도 같이 전달)
     try:
-        webview.start(func=on_start, debug=True)
+        # webview.start(func=on_start, debug=True)
+        webview.start(func=on_start, debug=False)
     except TypeError:
         webview.start(func=on_start, debug=True, js_api=api)
 

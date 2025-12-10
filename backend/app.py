@@ -52,7 +52,7 @@ def main():
 
     # 창 먼저 생성 (중요)
     window = webview.create_window(
-        title="미술 수업 자료 Index",
+        title="쑥쑥인덱스",
         url=index_path.as_uri(),
         js_api=api,  # 여기에 먼저 주입
         width=1100,

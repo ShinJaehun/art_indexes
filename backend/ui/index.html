@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="ko">
+
 <head>
   <meta charset="UTF-8" />
   <title>쑥쑥인덱스</title>
@@ -7,6 +8,7 @@
   <link rel="stylesheet" href="./publish.css" />
   <link rel="stylesheet" href="./ui.css" />
 </head>
+
 <body>
   <h1>쑥쑥인덱스</h1>
 
@@ -21,13 +23,7 @@
     <button id="btnSync" class="btn">🔄 Sync (썸네일/인덱스 갱신)</button>
     <button id="btnEdit" class="btn">✏️ 편집 모드</button>
     <button id="btnSaveAll" class="btn" disabled>💾 전체 저장</button>
-
-    <button id="btnPruneDryRun" class="btn">프룬 점검</button>
-    <button id="btnPruneApply" class="btn">프룬 적용</button>
-    <label style="margin-left:.5rem;">
-      <input type="checkbox" id="chkPruneDeleteThumbs">
-      고아 썸네일 삭제
-    </label>
+    <button id="btnResetAll" class="btn btn-danger" type="button">⚠ 전체 초기화</button>
 
     <!-- 정렬 컨트롤 -->
     <span class="sort-controls">
@@ -38,8 +34,8 @@
           <option value="title">이름순</option>
         </select>
       </label>
-      <button id="btnSortAsc" class="btn" title="오름차순">↑</button>
-      <button id="btnSortDesc" class="btn" title="내림차순">↓</button>
+      <button id="btnSortAsc" class="btn" title="오름차순">▲</button>
+      <button id="btnSortDesc" class="btn" title="내림차순">▼</button>
     </span>
   </div>
 
@@ -49,4 +45,5 @@
   <script src="./master.js" defer></script>
   <script src="./toolbar.js" defer></script>
 </body>
+
 </html>

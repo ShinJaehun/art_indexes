@@ -7,6 +7,8 @@ let _bridgeReadyOnce = false;
 let hasBridge = false;
 let _statusTimer = null;
 let _metaSaveTimer = null;
+let _syncInProgress = false; // P5: Sync 중복 클릭 방지 플래그
+
 
 // --- paste modifier 키 상태 추적 (Shift/Alt 감지) ---
 const __pasteMods = { shift: false, alt: false };
@@ -221,29 +223,52 @@ function showStatus({ level, title, lines = [], errors = [], metrics = null, aut
 }
 
 function renderSyncResult(result) {
-  const lines = [
-    `썸네일 스캔: ${result.scanOk ? "OK" : "FAIL"}`,
-    `파일 반영: ${result.pushOk ? "OK" : "FAIL"}`
-  ];
+  const scanOk = !!result.scanOk;
+  const pushOk = !!result.pushOk;
 
-  const pureOk = result.ok && result.scanOk && result.pushOk && (!result.errors || result.errors.length === 0);
+  const pureOk =
+    !!result.ok &&
+    scanOk &&
+    pushOk &&
+    (!result.errors || result.errors.length === 0);
 
+  // 1) 완전 성공 + 변경 요약
   if (pureOk) {
     showStatus({
       level: "ok",
-      title: "동기화 완료",
-      lines,
+      title: "인덱스 동기화 완료",
+      lines: ["자료 목록을 resource 폴더와 다시 맞췄어요."],
       errors: [],
+      // metrics.blocksUpdated / foldersAdded / durationMs 는 기존 포맷으로 그대로 표시
       metrics: result.metrics || null,
       autoHideMs: 2500,
     });
     return;
   }
 
+  // 2) 부분 성공 / 경고 케이스용 문장들 먼저 준비
+  const lines = [];
+
+  // 썸네일 스캔 측 문제
+  if (result.scanOk === false) {
+    lines.push("일부 폴더의 썸네일을 만들지 못했습니다.");
+  }
+
+  // 인덱스 파일 반영 측 문제
+  if (result.pushOk === false) {
+    lines.push("인덱스 파일을 저장하는 과정에서 오류가 있었습니다.");
+  }
+
+  // scanOk / pushOk 는 모두 true인데, errors만 있는 경우 등
+  if (!lines.length) {
+    lines.push("동기화 과정에서 추가 경고 또는 오류가 감지되었습니다.");
+  }
+
+  // 2-a) 부분 성공: ok 이지만 일부 단계 실패/경고
   if (result.ok) {
     showStatus({
       level: "warn",
-      title: "동기화 부분 완료",
+      title: "동기화는 되었지만 일부 작업이 실패했습니다",
       lines,
       errors: result.errors || [],
       metrics: result.metrics || null,
@@ -251,15 +276,26 @@ function renderSyncResult(result) {
     return;
   }
 
+  // 3) 전체 실패: 스캔/저장 쪽이 실제로 깨진 경우
+  const errLines = [];
+  if (!scanOk) {
+    errLines.push("resource 폴더를 다시 스캔하는 중 문제가 생겼습니다.");
+  }
+  if (!pushOk) {
+    errLines.push("인덱스 파일을 저장하는 중 문제가 생겼습니다.");
+  }
+  if (!errLines.length) {
+    errLines.push("동기화 중 알 수 없는 오류가 발생했습니다.");
+  }
+
   showStatus({
     level: "error",
-    title: "동기화 실패",
-    lines,
+    title: "동기화 중 오류가 발생했습니다",
+    lines: errLines,
     errors: result.errors || [],
     metrics: result.metrics || null,
   });
 }
-
 
 // ---- P5-1: 현재 인덱스 파일 경로 상태바 ---------------------------------
 
@@ -285,17 +321,89 @@ function ensureIndexPathBar() {
   if (!bar) {
     bar = document.createElement("div");
     bar.id = "indexPathBar";
-    bar.className = "index-status"; // CSS는 publish.css 등에서 정의
-    const anchor = $("#statusBar") || $("#content") || document.body;
-    anchor.insertAdjacentElement("beforebegin", bar);
+    bar.className = "index-status"; // CSS는 ui.css / publish.css 등에서 정의
+
+    const statusBar = $("#statusBar");
+    const content = $("#content");
+
+    // P5: 상태 메시지 바로 아래에 붙여서 "보조 정보" 느낌으로
+    if (statusBar) {
+      statusBar.insertAdjacentElement("afterend", bar);
+    } else if (content) {
+      content.insertAdjacentElement("beforebegin", bar);
+    } else {
+      document.body.insertAdjacentElement("afterbegin", bar);
+    }
   }
+
+  // 내부 구조는 한 번만 세팅
+  if (!bar.__wired) {
+    bar.__wired = true;
+    bar.innerHTML = `
+      <span id="indexPathText"></span>
+      <span class="index-actions">
+        <button id="btnOpenIndexFolder" class="btn btn-small" type="button">📂 폴더 열기</button>
+      </span>
+    `;
+
+    const btnOpen = $("#btnOpenIndexFolder", bar);
+
+    // 📂 인덱스 폴더 열기
+    if (btnOpen) {
+      btnOpen.addEventListener("click", async () => {
+        if (!hasBridge) {
+          showStatus({
+            level: "warn",
+            title: "데스크톱 앱에서만 폴더 열기 기능을 사용할 수 있습니다.",
+          });
+          return;
+        }
+        try {
+          const info = await call("open_index_folder");
+          if (info?.ok && info.path) {
+            showStatus({
+              level: "ok",
+              title: "폴더 열림",
+              lines: [info.path],
+              autoHideMs: 2500,
+            });
+          } else {
+            const msg =
+              (info && (info.error || (info.errors && info.errors[0]))) ||
+              "폴더를 열 수 없습니다.";
+            showStatus({
+              level: "error",
+              title: "폴더 열기 실패",
+              lines: [msg],
+            });
+          }
+        } catch (e) {
+          showStatus({
+            level: "error",
+            title: "폴더 열기 예외",
+            lines: [String(e?.message || e)],
+          });
+        }
+      });
+    }
+  }
+
   return bar;
 }
 
 function updateIndexPathBar(extraText) {
   const bar = ensureIndexPathBar();
   const path = detectCurrentIndexPath();
-  bar.textContent = extraText ? `현재 파일: ${path} ${extraText}` : `현재 파일: ${path}`;
+  const labelEl = $("#indexPathText", bar);
+  const text = extraText
+    ? `현재 파일: ${path} ${extraText}`
+    : `현재 파일: ${path}`;
+
+  if (labelEl) {
+    labelEl.textContent = text;
+  } else {
+    bar.textContent = text;
+  }
 }
 
 function detectBridge() {
@@ -333,8 +441,14 @@ async function onBridgeReady() {
   _bridgeReadyOnce = true;
   detectBridge();
   try {
-    // get_master/save_master/refresh_thumb/sync 가 준비될 때까지 대기
-    await waitForApi(["get_master", "save_master", "refresh_thumb", "sync"]);
+    // get_master/save_master/refresh_thumb/sync/get_current_index_path 가 준비될 때까지 대기
+    await waitForApi([
+      "get_master",
+      "save_master",
+      "refresh_thumb",
+      "sync",
+      "get_current_index_path",
+    ]);
   } catch (e) {
     console.error(e);
     showStatus({
@@ -344,6 +458,18 @@ async function onBridgeReady() {
     });
     return;
   }
+
+  // P5-1: 백엔드에서 현재 인덱스 파일의 실제 경로를 받아와 전역에 보관
+  try {
+    const res = await call("get_current_index_path");
+    if (res && res.path) {
+      // detectCurrentIndexPath()에서 두 번째 우선순위로 사용하는 값
+      window.__CURRENT_INDEX_PATH = res.path;
+    }
+  } catch (e) {
+    console.warn("get_current_index_path failed:", e);
+  }
+
   await loadMaster();
 }
 
@@ -442,12 +568,26 @@ function wireGlobalToolbar() {
   const btnSync = document.querySelector("#btnSync");
   if (!btnSync || btnSync.__wired) return;
   btnSync.__wired = true;
+
+  // 초기 상태 정리
+  btnSync.disabled = false;
+  btnSync.setAttribute("aria-busy", "false");
+
   btnSync.addEventListener("click", async () => {
     if (!hasBridge) {
       return showStatus({ level: "warn", title: "데스크톱 앱에서만 동기화 가능합니다." });
     }
-    try {
 
+    // P5: 이미 동기화 중이면 클릭 무시
+    if (_syncInProgress) {
+      return;
+    }
+
+    _syncInProgress = true;
+    btnSync.disabled = true;
+    btnSync.setAttribute("aria-busy", "true");
+
+    try {
       // 1) 현재 화면 상태 저장
       await call("save_master", serializeMaster());
       // 2) 백엔드 동기화
@@ -459,8 +599,13 @@ function wireGlobalToolbar() {
     } catch (e) {
       console.error(e);
       showStatus({ level: "error", title: "동기화 실패", lines: [String(e?.message || e)] });
+    } finally {
+      _syncInProgress = false;
+      btnSync.disabled = false;
+      btnSync.setAttribute("aria-busy", "false");
     }
   });
+
 }
 
 async function loadMaster() {
@@ -469,6 +614,17 @@ async function loadMaster() {
   try {
     if (hasBridge) {
       const { html } = await call("get_master");
+
+      // 현재 인덱스 파일 절대 경로 업데이트
+      try {
+        const info = await call("get_current_index_path");
+        if (info && info.path) {
+          window.__CURRENT_INDEX_PATH = info.path;
+        }
+      } catch (e) {
+        console.warn("get_current_index_path failed", e);
+      }
+
       $("#content").innerHTML = html || "<p>내용 없음</p>";
     } else {
       const blocks = $$(".card", document);
@@ -541,6 +697,7 @@ function enhanceBlocks() {
           <button class="btn btnCancelOne" disabled>취소</button>
           <button class="btn btnThumb">썸네일 갱신</button>
           <button class="btn btnToggleHidden">숨김</button>
+          <button class="btn btnOpenFolder">폴더 열기</button>
           <button class="btn btnToggleDelete">삭제</button>
         `;
       } else {
@@ -559,6 +716,14 @@ function enhanceBlocks() {
             // 이론상 없겠지만, 그래도 actions 안 첫 번째에 넣어둠
             actions.insertBefore(cancelBtn, actions.firstChild);
           }
+        }
+
+        // P5: 기존 마크업에 폴더 버튼이 없다면 추가
+        if (!actions.querySelector(".btnOpenFolder")) {
+          const folderBtn = document.createElement("button");
+          folderBtn.className = "btn btnOpenFolder";
+          folderBtn.textContent = "폴더 열기";
+          actions.appendChild(folderBtn);
         }
       }
 
@@ -719,6 +884,47 @@ function enhanceBlocks() {
 
     const btnToggleHidden = $(".btnToggleHidden", actions);
     const btnDelete = $(".btnToggleDelete", actions);
+    const btnOpenFolder = $(".btnOpenFolder", actions);
+
+    // --- 카드별 폴더 열기 ---
+    if (btnOpenFolder) {
+      btnOpenFolder.onclick = async () => {
+        if (!folder) {
+          alert("이 카드에 연결된 폴더 이름을 찾을 수 없습니다.");
+          return;
+        }
+        if (!hasBridge) {
+          alert("폴더 열기는 데스크톱 앱에서만 가능합니다.");
+          return;
+        }
+        try {
+          const res = await call("open_folder", folder);
+          if (!res?.ok) {
+            const msg = res?.error || "폴더를 열 수 없습니다.";
+            showStatus({
+              level: "error",
+              title: "폴더 열기 실패",
+              lines: [msg],
+            });
+          } else {
+            // 성공 시에는 굳이 상태바에 안 띄워도 되고,
+            // 필요하면 아래처럼 한 줄 정도만:
+            showStatus({
+              level: "ok",
+              title: "폴더 열림",
+              lines: [res.path || folder],
+              autoHideMs: 2000,
+            });
+          }
+        } catch (e) {
+          showStatus({
+            level: "error",
+            title: "폴더 열기 예외",
+            lines: [String(e?.message || e)],
+          });
+        }
+      };
+    }
 
     // --- P3-2: 숨김 토글 ---
     if (btnToggleHidden) {

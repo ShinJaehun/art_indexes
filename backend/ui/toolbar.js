@@ -9,11 +9,10 @@ function renderPruneReport(rep) {
   if (!rep) return ["리포트 없음"];
   const s = rep.summary || {};
   const lines = [];
+  // 현재는 UI에서 프룬 기능을 노출하지 않지만,
+  // 내부 디버깅용으로 쓸 수 있도록 최소한의 요약만 유지해 둔다.
   lines.push(
-    `FS 폴더: ${s.fs_slugs ?? "-"}, MasterContent: ${s.master_content_slugs ?? "-"}, MasterIndex: ${s.master_index_slugs ?? "-"}`
-  );
-  lines.push(
-    `프룬 대상(missing_in_fs): ${rep.folders_missing_in_fs?.length ?? 0}건`
+    `폴더/인덱스 요약 - FS: ${s.fs_slugs ?? "-"}, MC: ${s.master_content_slugs ?? "-"}, MI: ${s.master_index_slugs ?? "-"}`
   );
   if (rep.folders_missing_in_fs?.length) {
     lines.push(" - " + rep.folders_missing_in_fs.join(", "));
@@ -45,11 +44,7 @@ function wireExtraToolbar() {
   // 선택적: 전역 편집/저장 버튼이 있는 경우 동일한 UX 적용
   const btnEditAll = $("#btnEdit");     // 존재하면 전역 편집 시작
   const btnSaveAll = $("#btnSaveAll");  // 존재하면 전역 저장
-
-  // ---- PRUNE: 드라이런 / 적용 ----
-  const btnPruneDryRun = $("#btnPruneDryRun");
-  const btnPruneApply = $("#btnPruneApply");
-  const chkPruneDeleteThumbs = $("#chkPruneDeleteThumbs"); // optional
+  const btnResetAll = $("#btnResetAll"); // ⚠ 전체 초기화 (global toolbar)
 
   const sortField = $("#sortField");
   const btnSortAsc = $("#btnSortAsc");
@@ -89,6 +84,92 @@ function wireExtraToolbar() {
     });
   }
 
+
+  // ⚠ 전체 초기화 (reset_all 호출)
+  if (btnResetAll) {
+    btnResetAll.addEventListener("click", async () => {
+      if (!hasBridge) {
+        showStatus({
+          level: "warn",
+          title: "데스크톱 앱에서만 초기화할 수 있습니다.",
+        });
+        return;
+      }
+
+      const ok = window.confirm(
+        "정말 전체 초기화할까요?\n\n" +
+        "- backend/master_content.html\n" +
+        "- resource/master_index.html\n" +
+        "- resource/**/thumbs/ 폴더\n" +
+        "- resource/**/index.html 파일\n" +
+        "- backend/.suksukidx.registry.json\n\n" +
+        "이 작업은 되돌릴 수 없습니다."
+      );
+      if (!ok) return;
+
+      try {
+        showStatus({
+          level: "warn",
+          title: "전체 초기화 중…",
+        });
+
+        const r = await call("reset_all");
+        if (!r?.ok) {
+          const msg =
+            (r && (r.error || (Array.isArray(r.errors) && r.errors[0]))) ||
+            "초기화에 실패했습니다.";
+          showStatus({
+            level: "error",
+            title: "전체 초기화 실패",
+            lines: [msg],
+            errors: r?.errors || [],
+          });
+          return;
+        }
+
+        const summaryLines = [];
+        if (r.master_content) summaryLines.push("master_content.html 삭제");
+        if (r.master_index) summaryLines.push("master_index.html 삭제");
+        if (r.registry) summaryLines.push("레지스트리 삭제");
+        summaryLines.push(`thumbs 폴더 ${r.thumb_dirs || 0}곳`);
+        summaryLines.push(`child index ${r.child_indexes || 0}개`);
+
+        showStatus({
+          level: "ok",
+          title: "전체 초기화 완료",
+          lines: summaryLines,
+        });
+
+        // 비워진 상태로 다시 로드
+        await loadMaster();
+      } catch (e) {
+        showStatus({
+          level: "error",
+          title: "전체 초기화 예외",
+          lines: [String(e?.message || e)],
+        });
+      }
+    });
+  }
+
+  // ---- P5: 프룬/고아 썸네일 정리 UI 숨기기 ------------------------------
+  // HTML에는 예전 버튼이 남아 있을 수 있으므로, 로딩 시점에 통째로 제거한다.
+  (function hidePruneControls() {
+    const btnPruneDryRun = $("#btnPruneDryRun");
+    const btnPruneApply = $("#btnPruneApply");
+    const chkPruneDeleteThumbs = $("#chkPruneDeleteThumbs");
+
+    if (btnPruneDryRun) btnPruneDryRun.remove();
+    if (btnPruneApply) btnPruneApply.remove();
+
+    if (chkPruneDeleteThumbs) {
+      const label = chkPruneDeleteThumbs.closest("label");
+      if (label) label.remove();
+      else chkPruneDeleteThumbs.remove();
+    }
+  })();
+
+
   // ---- 전역 편집/저장(선택적) ----
   if (btnEditAll && btnSaveAll) {
     // 기본 상태: 편집 꺼짐, [편집] 활성 / [저장] 비활성
@@ -110,7 +191,7 @@ function wireExtraToolbar() {
       if (!hasBridge) return;
       btnSaveAll.disabled = true;
       try {
-        // ✅ 저장 직전 보정
+        // 저장 직전 보정
         $$(".card .inner").forEach(el => { autoLinkify(el); decorateExternalLinks(el); });
 
         await call("save_master", serializeMaster());
@@ -127,93 +208,6 @@ function wireExtraToolbar() {
         console.error(e);
         showStatus({ level: "error", title: "저장 실패", lines: [String(e?.message || e)] });
         btnSaveAll.disabled = false;
-      }
-    });
-  }
-
-  if (btnPruneDryRun) {
-    btnPruneDryRun.addEventListener("click", async () => {
-      if (!hasBridge) return alert("데스크톱 앱에서 실행하세요.");
-      btnPruneDryRun.disabled = true;
-      showStatus({ level: "warn", title: "프룬 점검 중…", lines: ["리포트 생성"] });
-      try {
-        // 백엔드: MasterApi.diff_and_report(include_thumbs=True)
-        const rep = await call("diff_and_report");
-        window._lastPruneReport = rep;  // 적용 전 재사용
-        const lines = renderPruneReport(rep);
-        showStatus({
-          level: "ok",
-          title: "프룬 드라이런 완료",
-          lines
-        });
-      } catch (e) {
-        console.error(e);
-        showStatus({
-          level: "error",
-          title: "프룬 드라이런 실패",
-          lines: [String(e?.message || e)]
-        });
-      } finally {
-        btnPruneDryRun.disabled = false;
-      }
-    });
-  }
-
-  if (btnPruneApply) {
-    btnPruneApply.addEventListener("click", async () => {
-      if (!hasBridge) return alert("데스크톱 앱에서 실행하세요.");
-      btnPruneApply.disabled = true;
-
-      try {
-        // 1) 최신 리포트 확보(없으면 즉시 생성)
-        let rep = window._lastPruneReport;
-        if (!rep) rep = await call("diff_and_report");
-        const lines = renderPruneReport(rep);
-
-        // 2) 사용자 확인(UI에 라이트하게 요약도 표시)
-        const cnt = (rep.folders_missing_in_fs?.length ?? 0);
-        const thumbsCnt = (rep.thumbs_orphans?.length ?? 0);
-        const wantDeleteThumbs = !!(chkPruneDeleteThumbs && chkPruneDeleteThumbs.checked);
-
-        const ok = confirm(
-          [
-            "프룬을 적용합니다.",
-            `- master_content에서 제거: ${cnt}건`,
-            wantDeleteThumbs ? `- 고아 썸네일 삭제: ${thumbsCnt}개` : "- 고아 썸네일은 유지",
-            "",
-            "진행할까요?",
-          ].join("\n")
-        );
-        if (!ok) { btnPruneApply.disabled = false; return; }
-
-        showStatus({ level: "warn", title: "프룬 적용 중…", lines });
-
-        // 3) 적용 호출
-        // 백엔드 시그니처: prune_apply(report=None, *, delete_thumbs=False)
-        // → JS에선 report를 넘기면 1번째 위치인자로 매핑됨.
-        // (delete_thumbs 토글은 아래 주석 참고)
-        const result = await call("prune_apply", null, wantDeleteThumbs);
-
-        // 4) 적용 결과 표기 + 화면 갱신
-        const post = [
-          `master 제거: ${result?.removed_from_master ?? 0}건`,
-          `child 재생성: ${result?.child_built ?? 0}건`,
-        ];
-        if (typeof result?.thumbs_deleted === "number") {
-          post.push(`썸네일 삭제: ${result.thumbs_deleted}개`);
-        }
-        await loadMaster();
-        showStatus({ level: "ok", title: "프룬 적용 완료", lines: post });
-
-      } catch (e) {
-        console.error(e);
-        showStatus({
-          level: "error",
-          title: "프룬 적용 실패",
-          lines: [String(e?.message || e)]
-        });
-      } finally {
-        btnPruneApply.disabled = false;
       }
     });
   }

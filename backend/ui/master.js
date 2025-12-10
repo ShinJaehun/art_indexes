@@ -587,9 +587,16 @@ function wireGlobalToolbar() {
     btnSync.disabled = true;
     btnSync.setAttribute("aria-busy", "true");
 
+    const hasCards = !!document.querySelector(".card");
+
     try {
+
       // 1) 현재 화면 상태 저장
-      await call("save_master", serializeMaster());
+      //    ✅ 카드가 하나도 없을 때는 "내용 없음" 플레이스홀더가 저장되지 않도록 선저장 생략
+      if (hasCards) {
+        await call("save_master", serializeMaster());
+      }
+
       // 2) 백엔드 동기화
       showStatus({ level: "warn", title: "동기화 중…" });
       const r = await call("sync");
@@ -1378,6 +1385,44 @@ function safeThumbName(name) {
 // 저장 직렬화: h2 + thumb-wrap + inner(본문)만 남기고, 버튼/편집속성 제거
 function serializeMaster() {
   const rootClone = document.querySelector("#content").cloneNode(true);
+
+  // "내용 없음" 플레이스홀더는 파일에 절대 저장하지 않도록 정리
+  (function stripPlaceholder(root) {
+    const firstCard = root.querySelector(".card");
+
+    if (firstCard) {
+      // 카드가 하나라도 있을 때:
+      // 첫 번째 카드 앞에 있는 형제들 중에서
+      // <p>내용 없음</p>만 제거한다.
+      let node = root.firstChild;
+      while (node && node !== firstCard) {
+        const next = node.nextSibling;
+        if (
+          node.nodeType === 1 &&
+          node.tagName === "P" &&
+          node.textContent.trim() === "내용 없음"
+        ) {
+          root.removeChild(node);
+        }
+        node = next;
+      }
+    } else {
+      // 카드가 하나도 없고, 루트에 플레이스홀더 문단만 있는 경우 → 완전 빈 상태로 저장
+      const onlyP =
+        root.children.length === 1 &&
+        root.children[0].tagName === "P" &&
+        root.children[0].textContent.trim() === "내용 없음";
+
+      if (onlyP) {
+        root.innerHTML = "";
+      } else {
+        // 혹시 모를 상단 플레이스홀더를 한 번 더 방어적으로 제거
+        root.querySelectorAll("p").forEach((p) => {
+          if (p.textContent.trim() === "내용 없음") p.remove();
+        });
+      }
+    }
+  })(rootClone);
 
   rootClone.querySelectorAll(".card").forEach(div => {
     const head = div.querySelector(".card-head");

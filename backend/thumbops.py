@@ -6,19 +6,39 @@ try:
 except Exception:
     BeautifulSoup = None
 
-try:
-    from .thumbs import _safe_name as _thumb_safe_name
-except Exception:
-    from thumbs import _safe_name as _thumb_safe_name
-
+from backend.thumbs import _safe_name as _thumb_safe_name
 
 def _fs_thumb_path(resource_dir: Path, card_name: str) -> Path:
     safe = _thumb_safe_name(card_name)
     return resource_dir / card_name / "thumbs" / f"{safe}.jpg"
 
+def _fs_thumb_path_any(resource_dir: Path, card_name: str) -> Optional[Path]:
+    """
+    thumbs 폴더에 실제로 존재하는 jpg를 우선 사용.
+    - 1순위: safe_name.jpg
+    - 2순위: thumbs 안의 첫 번째 *.jpg
+    """
+    thumbs_dir = resource_dir / card_name / "thumbs"
+    if not thumbs_dir.exists() or not thumbs_dir.is_dir():
+        return None
+
+    # 1) safe_name 우선
+    preferred = _fs_thumb_path(resource_dir, card_name)
+    if preferred.exists():
+        return preferred
+
+    # 2) 아무 jpg 하나라도 있으면 사용
+    try:
+        for p in thumbs_dir.iterdir():
+            if p.is_file() and p.suffix.lower() == ".jpg":
+                return p
+    except Exception:
+        return None
+
+    return None
 
 def _fs_thumb_exists(resource_dir: Path, card_name: str) -> bool:
-    return _fs_thumb_path(resource_dir, card_name).exists()
+    return _fs_thumb_path_any(resource_dir, card_name) is not None
 
 
 def _is_within(ancestor, node) -> bool:
@@ -46,16 +66,17 @@ def _append_fs_thumb_if_missing(
     if tw.find("img", class_="thumb"):
         return
 
-    safe = _thumb_safe_name(card_name)
-    jpg = resource_dir / card_name / "thumbs" / f"{safe}.jpg"
-    if not jpg.exists():
+    jpg = _fs_thumb_path_any(resource_dir, card_name)
+    if not jpg:
         return
 
+    # 실제 파일명을 그대로 사용 (safe_name 불일치/정규화 차이 대비)
+    jpg_name = jpg.name
     img = soup.new_tag(
         "img",
         **{
             "class": "thumb",
-            "src": f"resource/{card_name}/thumbs/{safe}.jpg",
+            "src": f"resource/{card_name}/thumbs/{jpg_name}",
             "alt": "썸네일",
         },
     )
@@ -216,8 +237,13 @@ def persist_thumbs_in_master(html: str, resource_dir: Path) -> str:
             # dedupe: tw 내부 이미지 1장만 유지 (FS 경로 우선)
             imgs = tw.find_all("img")
             if imgs:
-                safe = _thumb_safe_name(card_name)
-                fs_src = f"resource/{card_name}/thumbs/{safe}.jpg"
+                # FS에 실제 존재하는 jpg 기준으로 fs_src 구성
+                jpg = _fs_thumb_path_any(resource_dir, card_name)
+                fs_src = (
+                    f"resource/{card_name}/thumbs/{jpg.name}"
+                    if jpg is not None
+                    else f"resource/{card_name}/thumbs/{_thumb_safe_name(card_name)}.jpg"
+                )
 
                 # 우선순위 1: class에 'thumb' 있고 src가 FS 경로인 것
                 keep = next(
@@ -252,7 +278,7 @@ def persist_thumbs_in_master(html: str, resource_dir: Path) -> str:
                 tw.decompose()
 
         # 4) 편집용 속성 정리
-        for el in [div, head, tw] + list(div.find_all(True)):
+        for el in [div, head] + ([tw] if tw is not None else []) + list(div.find_all(True)):
             if hasattr(el, "attrs"):
                 el.attrs.pop("contenteditable", None)
                 el.attrs.pop("draggable", None)
@@ -265,12 +291,12 @@ def persist_thumbs_in_master(html: str, resource_dir: Path) -> str:
 
 def make_clean_block_html_for_master(card_name: str, resource_dir: Path) -> str:
     """초기화/신규 카드용 '깨끗한 기본 카드' HTML 문자열 생성(툴바 없음)"""
-    safe = _thumb_safe_name(card_name)
-    thumb_path = resource_dir / card_name / "thumbs" / f"{safe}.jpg"
-    if thumb_path.exists():
+    jpg = _fs_thumb_path_any(resource_dir, card_name)
+    if jpg is not None:
+        jpg_name = jpg.name
         thumb_html = f"""
       <div class="thumb-wrap">
-        <img class="thumb" src="resource/{card_name}/thumbs/{safe}.jpg" alt="썸네일" />
+        <img class="thumb" src="resource/{card_name}/thumbs/{jpg_name}" alt="썸네일" />
       </div>"""
     else:
         thumb_html = ""  # ← 빈 래퍼 생성 금지

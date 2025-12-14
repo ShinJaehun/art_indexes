@@ -8,101 +8,47 @@ import shutil
 from datetime import datetime
 import platform
 import subprocess
+import base64
 
-try:
-    from .fsutil import atomic_write_text
-except Exception:
-    from fsutil import atomic_write_text
-
-try:
-    from .lockutil import SyncLock, SyncLockError
-except Exception:
-    from lockutil import SyncLock, SyncLockError
-
-try:
-    from .thumbs import make_thumbnail_for_folder, has_ffmpeg, has_poppler
-except Exception:
-    from thumbs import make_thumbnail_for_folder, has_ffmpeg, has_poppler
-
-try:
-    # ensure_css_assets 포함하여 가져옴
-    from .builder import (
-        run_sync_all,
-        render_master_index,
-        render_child_index,
-        ensure_css_assets,
-        ensure_card_ids,
-    )
-except Exception:
-    from builder import (
-        run_sync_all,
-        render_master_index,
-        render_child_index,
-        ensure_css_assets,
-        ensure_card_ids,
-    )
-
-try:
-    from .sanitizer import sanitize_for_publish
-except Exception:
-    from sanitizer import sanitize_for_publish
+from backend.fsutil import atomic_write_text
+from backend.lockutil import SyncLock, SyncLockError
+from backend.thumbs import make_thumbnail_for_folder, has_ffmpeg, has_poppler, _safe_name as _thumb_safe_name
+from backend.builder import (
+    run_sync_all,
+    render_master_index,
+    render_child_index,
+    ensure_css_assets,
+    ensure_card_ids,
+)
+from backend.sanitizer import sanitize_for_publish
 
 # 공개 API 우선 사용, 없으면 프라이빗 심볼로 폴백(하위호환)
 try:
-    from .sanitizer import safe_unescape_tag_texts_in_inner as _safe_unescape_api
+    from backend.sanitizer import safe_unescape_tag_texts_in_inner as _safe_unescape_api
 except Exception:
     try:
-        from .sanitizer import _safe_unescape_tag_texts_in_inner as _safe_unescape_api  # type: ignore
+        from backend.sanitizer import _safe_unescape_tag_texts_in_inner as _safe_unescape_api  # type: ignore
     except Exception:
-        try:
-            from sanitizer import safe_unescape_tag_texts_in_inner as _safe_unescape_api
-        except Exception:
-            try:
-                from sanitizer import _safe_unescape_tag_texts_in_inner as _safe_unescape_api  # type: ignore
-            except Exception:
-                _safe_unescape_api = None  # bs4 미사용
+        _safe_unescape_api = None  # bs4 미사용/미설치
 
-try:
-    from .pruner import DiffReporter, PruneReport, PruneApplier
-except ImportError:
-    from pruner import DiffReporter, PruneReport, PruneApplier
+from backend.pruner import DiffReporter, PruneReport, PruneApplier
 
-try:
-    from .htmlops import (
-        extract_body_inner,
-        prefix_resource_paths_for_root,
-        strip_back_to_master,
-        adjust_paths_for_folder,
-        extract_inner_html_only,
-    )
-except Exception:
-    from htmlops import (
-        extract_body_inner,
-        prefix_resource_paths_for_root,
-        strip_back_to_master,
-        adjust_paths_for_folder,
-        extract_inner_html_only,
-    )
+from backend.htmlops import (
+    extract_body_inner,
+    prefix_resource_paths_for_root,
+    strip_back_to_master,
+    adjust_paths_for_folder,
+    extract_inner_html_only,
+)
 
-try:
-    from .thumbops import (
-        ensure_thumb_in_head,
-        inject_thumbs_for_preview,
-        persist_thumbs_in_master,
-        make_clean_block_html_for_master,
-    )
-except Exception:
-    from thumbops import (
-        ensure_thumb_in_head,
-        inject_thumbs_for_preview,
-        persist_thumbs_in_master,
-        make_clean_block_html_for_master,
-    )
+from backend.thumbops import (
+    ensure_thumb_in_head,
+    inject_thumbs_for_preview,
+    persist_thumbs_in_master,
+    make_clean_block_html_for_master,
+)
 
-try:
-    from .card_registry import CardRegistry
-except Exception:
-    from card_registry import CardRegistry
+from backend.card_registry import CardRegistry
 
 try:
     from bs4 import BeautifulSoup, Comment
@@ -111,22 +57,13 @@ except Exception:
     Comment = None
 
 # -------- 상수 --------
-try:
-    from .constants import (
-        MASTER_INDEX,
-        MASTER_CONTENT,
-        BACKEND_DIR,
-        RESOURCE_DIR,
-        DEFAULT_LOCK_PATH,
-    )
-except Exception:
-    from constants import (
-        MASTER_INDEX,
-        MASTER_CONTENT,
-        BACKEND_DIR,
-        RESOURCE_DIR,
-        DEFAULT_LOCK_PATH,
-    )
+from backend.constants import (
+    MASTER_INDEX,
+    MASTER_CONTENT,
+    BACKEND_DIR,
+    RESOURCE_DIR,
+    DEFAULT_LOCK_PATH,
+)
 
 # sanitizer 로그 토글
 SAN_VERBOSE = os.getenv("SUKSUKIDX_SAN_VERBOSE") == "1"
@@ -192,7 +129,10 @@ class MasterApi:
         atomic_write_text(str(path_obj), s, encoding="utf-8", newline="\n")
 
     def _prefix_resource_for_ui(self, html: str) -> str:
-        """backend/ui/index.html에서 주입해 렌더링할 때만 resource/ 경로에 ../../ 프리픽스"""
+        """
+        backend/ui/index.html(file://)에서 innerHTML로 렌더링할 때,
+        상대경로가 깨지지 않도록 resource/* 를 file:/// 절대경로로 변환한다.
+        """
         try:
             from bs4 import BeautifulSoup as _BS
         except Exception:
@@ -200,13 +140,17 @@ class MasterApi:
 
         if not html:
             return html
+        base_dir = self._p_base_dir()
+        resource_root = (base_dir / "resource").resolve()
+        resource_root_uri = resource_root.as_uri().rstrip("/") + "/"
+
         if _BS is None:
-            # 최소 안전망: 단순 치환(속성값 내에서만)
+            # bs4 없을 때: 가장 안전한 file:// 절대경로 치환
             return (
-                html.replace('src="resource/', 'src="../../resource/')
-                .replace("src='resource/", "src='../../resource/")
-                .replace('href="resource/', 'href="../../resource/')
-                .replace("href='resource/", "href='../../resource/")
+                html.replace('src="resource/', f'src="{resource_root_uri}')
+                .replace("src='resource/", f"src='{resource_root_uri}")
+                .replace('href="resource/', f'href="{resource_root_uri}')
+                .replace("href='resource/", f"href='{resource_root_uri}")
             )
 
         soup = _BS(html, "html.parser")
@@ -216,7 +160,62 @@ class MasterApi:
                 if not value or not isinstance(value, str):
                     continue
                 if value.startswith("resource/"):
-                    tag[attr] = f"../../{value}"
+                    # resource/foo/bar -> file:///.../resource/foo/bar
+                    tag[attr] = resource_root_uri + value[len("resource/"):]
+
+        return str(soup)
+
+    def _inline_thumb_images_for_ui(self, html: str) -> str:
+        """
+        UI(webview) 렌더링에서 file:// 로컬 파일 접근이 막히는 환경을 대비해,
+        썸네일(img.thumb)만 data URL로 인라인한다.
+        - master_content에서만 쓰는 'resource/<folder>/thumbs/<file>.jpg' 패턴 지원
+        """
+        try:
+            from bs4 import BeautifulSoup as _BS
+        except Exception:
+            return html
+
+        if not html:
+            return html
+
+        soup = _BS(html, "html.parser")
+        resource_dir = self._p_resource_dir()
+        base_dir = self._p_base_dir()
+        resource_root_uri = (base_dir / "resource").resolve().as_uri().rstrip("/") + "/"
+ 
+
+        for img in soup.find_all("img", class_="thumb"):
+            src = (img.get("src") or "").strip()
+
+            rel = None
+            if src.startswith("resource/"):
+                rel = src[len("resource/"):]
+            elif src.startswith(resource_root_uri):
+                rel = src[len(resource_root_uri):]
+            if not rel:
+                continue
+            fs = (resource_dir / rel).resolve()
+
+            try:
+                if fs.exists() and fs.is_file() and fs.suffix.lower() in (".jpg", ".jpeg"):
+                    b = fs.read_bytes()
+                    b64 = base64.b64encode(b).decode("ascii")
+                    img["src"] = f"data:image/jpeg;base64,{b64}"
+            except Exception:
+                # 인라인 실패해도 치명적이면 안 됨
+                continue
+
+        # DEBUG (임시)
+        data_cnt = str(soup).count("data:image/jpeg;base64,")
+        thumb_cnt = len(soup.find_all("img", class_="thumb"))
+        first = None
+        for img in soup.find_all("img", class_="thumb"):
+            first = (img.get("src") or "")[:80]
+            break
+        print(f"[ui-thumb] thumb_cnt={thumb_cnt} data_cnt={data_cnt} first_src={first}")
+
+
         return str(soup)
 
     def get_current_index_path(self) -> Dict[str, Any]:
@@ -387,6 +386,7 @@ class MasterApi:
             raw_html = self._read(master_content)
             html_for_view = inject_thumbs_for_preview(raw_html, self._p_resource_dir())
             html_for_view = self._prefix_resource_for_ui(html_for_view)
+            html_for_view = self._inline_thumb_images_for_ui(html_for_view)
             return {"html": html_for_view}
 
         if master_index.exists():
@@ -395,6 +395,8 @@ class MasterApi:
             self._write(master_content, inner)
             html_for_view = inject_thumbs_for_preview(inner, self._p_resource_dir())
             html_for_view = self._prefix_resource_for_ui(html_for_view)
+            html_for_view = self._inline_thumb_images_for_ui(html_for_view)
+
             return {"html": html_for_view}
 
         return {"html": ""}
@@ -586,11 +588,6 @@ class MasterApi:
             inner_for_master = strip_back_to_master(inner_for_master)
 
             # 썸네일 경로
-            try:
-                from .thumbs import _safe_name as _thumb_safe_name
-            except Exception:
-                from thumbs import _safe_name as _thumb_safe_name
-
             safe_name = _thumb_safe_name(card_title)
             thumb_rel_for_master = None
             if (resource_dir / card_title / "thumbs" / f"{safe_name}.jpg").exists():
@@ -652,10 +649,6 @@ class MasterApi:
             )
 
             # 썸네일 다시 계산
-            try:
-                from .thumbs import _safe_name as _thumb_safe_name
-            except Exception:
-                from thumbs import _safe_name as _thumb_safe_name
             safe_name = _thumb_safe_name(title)
             has_thumb = (resource_dir / title / "thumbs" / f"{safe_name}.jpg").exists()
             thumb_src = f"thumbs/{safe_name}.jpg" if has_thumb else None
@@ -858,11 +851,6 @@ class MasterApi:
                         # P5: 썸네일 실존 여부에 맞게 thumb_source 정리
                         items = reg.get("items") or []
                         resource_dir = self._p_resource_dir()
-
-                        try:
-                            from .thumbs import _safe_name as _thumb_safe_name
-                        except Exception:
-                            from thumbs import _safe_name as _thumb_safe_name
 
                         for item in items:
                             cid = (item.get("id") or "").strip()
@@ -1372,11 +1360,6 @@ class MasterApi:
                 }
 
             # 썸네일 파일 경로 계산(폴더 이름 기반 safe name)
-            try:
-                from .thumbs import _safe_name as _thumb_safe_name
-            except Exception:
-                from thumbs import _safe_name as _thumb_safe_name
-
             safe_name = _thumb_safe_name(folder_name)
             thumb_file = thumbs_dir / f"{safe_name}.jpg"
 

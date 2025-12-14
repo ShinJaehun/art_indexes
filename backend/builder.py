@@ -7,21 +7,8 @@ import hashlib
 import shutil
 import uuid
 
-try:
-    from .constants import PUBLISH_CSS, CSS_PREFIX
-except Exception:
-    PUBLISH_CSS = "backend/ui/publish.css"
-    CSS_PREFIX = "master"
-
-try:
-    # P3-1: 카드 ID 파일 헬퍼
-    from .fsutil import read_card_id, write_card_id
-except Exception:
-    try:
-        from fsutil import read_card_id, write_card_id
-    except Exception:
-        read_card_id = None
-        write_card_id = None
+from backend.constants import PUBLISH_CSS, CSS_PREFIX
+from backend.fsutil import read_card_id, write_card_id
 
 TOOLBAR_HTML = """
 <div class="card-actions">
@@ -47,11 +34,7 @@ def run_sync_all(
     if scan_only:
         return scan_ssot(resource_dir)
     try:
-        # 패키지 실행/스크립트 실행 모두 지원
-        try:
-            from .thumbs import scan_and_make_thumbs
-        except Exception:
-            from thumbs import scan_and_make_thumbs
+        from backend.thumbs import scan_and_make_thumbs
         # P5-썸네일: sync에서는 성능을 위해 기존 썸네일이 있으면 유지
         #  - 캡처 후보 X + 썸네일 O → 삭제
         #  - 캡처 후보 O + 썸네일 X → 1회 생성
@@ -71,10 +54,7 @@ def ensure_card_ids(resource_dir: Path) -> dict[str, str]:
     - 숨김 폴더(. 시작)와 'thumbs' 폴더는 제외
     - 중복 ID가 발견되면 후순위 폴더에 새 UUID를 발급하여 충돌을 해소
     """
-    if read_card_id is None or write_card_id is None:
-        # 헬퍼를 사용할 수 없는 환경에서는 조용히 폴백(이행기 대비)
-        # 호출 측에서 이 경우 ID 의존 로직을 건너뛸 수 있다.
-        return {}
+    # read_card_id / write_card_id 는 항상 존재해야 한다(패키지/패키징 일관성)
 
     folder_to_id: dict[str, str] = {}
     used_ids: dict[str, str] = {}
@@ -232,12 +212,43 @@ def scan_ssot(resource_dir: Path) -> Dict[str, Any]:
 
 # ---------- CSS 해시 배포 ----------
 def _read_publish_css(resource_dir: Path) -> Optional[bytes]:
-    """backend/ui/publish.css 를 최우선으로 읽고, 없으면 None 반환"""
-    base = resource_dir.parent  # 프로젝트 루트
+    """
+    publish.css 를 읽어 bytes로 반환.
+    - PyInstaller(one-folder)에서는 backend 패키지가 dist/.../_internal/backend 아래에 위치하므로
+      (즉, 이 파일(__file__) 기준으로 ui/ 폴더가 존재)
+      `Path(__file__).parent / "ui" / "publish.css"` 를 최우선으로 본다.
+    - 개발환경(소스 실행)에서는 기존처럼 PUBLISH_CSS(상대경로)도 fallback으로 본다.
+    """
+    # 1) 패키징/런타임 우선 경로: dist/.../_internal/backend/ui/publish.css
+    ui_css = Path(__file__).resolve().parent / "ui" / "publish.css"
+    if ui_css.exists():
+        return ui_css.read_bytes()
+
+    # 2) 기존 방식 fallback: (프로젝트 루트 기준) <base>/<PUBLISH_CSS>
+    base = resource_dir.parent
     p = base / PUBLISH_CSS
     if p.exists():
         return p.read_bytes()
     return None
+
+
+def _read_master_css(resource_dir: Path) -> Optional[bytes]:
+    """
+    master.css 를 읽어 bytes로 반환.
+    publish.css 가 없는 환경(또는 디버그)에서 resource에 master.css를 '실제로' 배포하기 위해 필요.
+    """
+    # 1) 패키징/런타임 우선 경로: dist/.../_internal/backend/ui/master.css
+    ui_css = Path(__file__).resolve().parent / "ui" / "master.css"
+    if ui_css.exists():
+        return ui_css.read_bytes()
+
+    # 2) 개발환경 fallback: (프로젝트 루트 기준) resource_dir.parent/master.css
+    base = resource_dir.parent
+    p = base / "master.css"
+    if p.exists():
+        return p.read_bytes()
+    return None
+ 
 
 
 def _sha1_12(b: bytes) -> str:
@@ -277,13 +288,34 @@ def ensure_css_assets(resource_dir: Path) -> str:
     publish.css 를 읽어 해시 파일로 배포하고, 사용해야 할 CSS 파일명을 반환.
     - 루트: resource/master.<HASH>.css
     - 각 폴더: resource/<folder>/master.<HASH>.css
-    - publish.css 가 없으면 "master.css" 로 폴백(이전 방식 유지)
+    - publish.css 가 없으면 master.css를 resource 루트/각 폴더에 '실제로' 배포하고 "master.css" 반환
     """
     css = _read_publish_css(resource_dir)
     if css is None:
-        # 안전 폴백: 기존 master.css 체계 유지
-        print("[css] publish.css not found; fallback to master.css")
-        return "master.css"
+        # ✅ 안전 폴백: master.css를 실제로 배포해 링크가 깨지지 않게 한다
+        master_css = _read_master_css(resource_dir)
+        if master_css is None:
+            # 여기까지 오면 진짜로 CSS 소스가 없는 상태
+            print("[css] publish.css/master.css not found; fallback to master.css (missing)")
+            return "master.css"
+
+        basename = "master.css"
+
+        # 루트 배포
+        root_target = resource_dir / basename
+        _write_if_changed(root_target, master_css)
+
+        # 각 폴더 배포
+        for d in sorted(
+            p for p in resource_dir.iterdir() if p.is_dir() and not p.name.startswith(".")
+        ):
+            if d.name.lower() == "thumbs":
+                continue
+            target = d / basename
+            _write_if_changed(target, master_css)
+
+        print(f"[css] deployed {basename} to root and folders (fallback)")
+        return basename
 
     h = _sha1_12(css)
     basename = f"{CSS_PREFIX}.{h}.css"
@@ -404,6 +436,7 @@ def render_master_index(
                 editable=False,
             )
         )
+    blocks_html = "\n".join(blocks)
     html = f"""
 <!DOCTYPE html>
 <html lang="ko">
@@ -414,7 +447,7 @@ def render_master_index(
   <link rel="stylesheet" href="{css_basename}"/>
 </head>
 <body>
-  {'\n'.join(blocks)}
+  {blocks_html}
 </body>
 </html>
 """.strip()

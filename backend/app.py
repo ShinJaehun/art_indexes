@@ -3,19 +3,16 @@ import sys
 import webview
 from typing import Optional
 
-try:
-    from .api import MasterApi
-except ImportError:
-    from api import MasterApi
+from backend.api import MasterApi
 
-try:
-    from .constants import BACKEND_DIR, RESOURCE_DIR
-except Exception:
-    BACKEND_DIR = "backend"
-    RESOURCE_DIR = "resource"
-
+from backend.constants import BACKEND_DIR, RESOURCE_DIR
 
 def _resolve_base_dir() -> Path:
+    """
+    Data root:
+    - dev: project root
+    - PyInstaller (onedir/onefile): folder containing the executable
+    """
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[1]
@@ -23,11 +20,14 @@ def _resolve_base_dir() -> Path:
 
 def _resolve_index_path(base_dir: Path) -> Optional[Path]:
     candidates = [
+        # PyInstaller onedir(6.x): <exe_dir>/_internal/backend/ui/index.html
+        base_dir / "_internal" / BACKEND_DIR / "ui" / "index.html",
+        # dev 배치: <project_root>/backend/ui/index.html
         base_dir / BACKEND_DIR / "ui" / "index.html",
         base_dir / "index.html",  # (구버전 폴백)
     ]
     for p in candidates:
-        if p.exists():
+        if p is not None and p.exists():
             return p
     return None
 
@@ -38,13 +38,17 @@ def main():
     if index_path is None:
         tried = [
             str(base_dir / "backend" / "ui" / "index.html"),
+            str(base_dir / "_internal" / "backend" / "ui" / "index.html"),
             str(base_dir / "index.html"),
         ]
+        if getattr(sys, "frozen", False):
+            tried.append(str(Path(sys.executable).resolve().parent / BACKEND_DIR / "ui" / "index.html"))
+
         print("[app] ERROR: UI index.html not found. tried:\n  " + "\n  ".join(tried))
         raise SystemExit(1)
 
     # resource 폴더 보장
-    resource_dir = base_dir / "resource"
+    resource_dir = base_dir / RESOURCE_DIR
     resource_dir.mkdir(parents=True, exist_ok=True)
 
     # JS API 객체 준비

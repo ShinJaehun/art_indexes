@@ -9,6 +9,17 @@ let _statusTimer = null;
 let _metaSaveTimer = null;
 let _syncInProgress = false; // P5: Sync 중복 클릭 방지 플래그
 
+// --- P6: 첫 실행(패키징 exe)에서 백엔드 자동 sync 타이밍 때문에
+//         "썸네일 없는 HTML"이 먼저 렌더링되는 문제를 완화하기 위한
+//         짧은 재로드 리트라이(카드 존재 + thumb 0일 때만)
+const _BOOT_RELOAD_MAX = 3;
+const _BOOT_RELOAD_DELAY_MS = 450;
+
+// data URL 썸네일은 브라우저/웹뷰의 file:// 제한을 우회하기 위한 것이므로
+// 절대 ../../resource/... 로 덮어쓰지 않는다.
+function isDataImageUrl(src) {
+  return typeof src === "string" && /^data:image\//i.test(src.trim());
+}
 
 // --- paste modifier 키 상태 추적 (Shift/Alt 감지) ---
 const __pasteMods = { shift: false, alt: false };
@@ -470,7 +481,7 @@ async function onBridgeReady() {
     console.warn("get_current_index_path failed:", e);
   }
 
-  await loadMaster();
+  await loadMaster({ retryThumbs: true, attempt: 0 });
 }
 
 document.addEventListener("DOMContentLoaded", async () => {
@@ -495,7 +506,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     updateIndexPathBar();
 
   } else {
-    await loadMaster();
+    await loadMaster({ retryThumbs: true, attempt: 0 });
   }
 });
 
@@ -602,7 +613,7 @@ function wireGlobalToolbar() {
       const r = await call("sync");
       renderSyncResult(r);
       // 3) 최신 상태 재로드
-      await loadMaster();
+      await loadMaster({ retryThumbs: false, attempt: 0 });
     } catch (e) {
       console.error(e);
       showStatus({ level: "error", title: "동기화 실패", lines: [String(e?.message || e)] });
@@ -615,7 +626,7 @@ function wireGlobalToolbar() {
 
 }
 
-async function loadMaster() {
+async function loadMaster({ retryThumbs = false, attempt = 0 } = {}) {
   if (_loadingMaster) return;
   _loadingMaster = true;
   try {
@@ -640,6 +651,30 @@ async function loadMaster() {
         for (const block of blocks) $("#content").appendChild(block.cloneNode(true));
       } else {
         $("#content").innerHTML = `<p class="hint">브라우저 미리보기: <code>.card</code> 블록이 없습니다.</p>`;
+      }
+    }
+
+    // --- P6: 부팅 직후(패키징 exe) 재로드 리트라이 ---
+    // 조건:
+    //   - 브리지 있음(=데스크톱 앱)
+    //   - 카드가 있는데 썸네일이 0개
+    //   - retryThumbs=true 인 경우에만
+    // 목적:
+    //   - 앱 시작 시 backend 쪽에서 1~2회 자동 sync가 도는 동안,
+    //     첫 get_master가 "썸네일 없는 HTML"을 반환할 수 있음
+    //   - 짧게 몇 번만 재시도해서 최종 HTML(thumb 인라인 포함)을 다시 받는다
+    if (hasBridge && retryThumbs) {
+      const cardCnt = $$("#content .card").length;
+      const thumbCnt = $$("#content img.thumb").length; // thumb-wrap 안이든 어디든 class=thumb 기준
+
+      if (cardCnt > 0 && thumbCnt === 0 && attempt < _BOOT_RELOAD_MAX) {
+        // 너무 시끄럽지 않게: 상태바는 띄우지 않고, 조용히 재시도
+        _loadingMaster = false;
+        setTimeout(() => {
+          // attempt 누적해서 재호출
+          loadMaster({ retryThumbs: true, attempt: attempt + 1 });
+        }, _BOOT_RELOAD_DELAY_MS);
+        return;
       }
     }
 
@@ -837,40 +872,53 @@ function enhanceBlocks() {
     if (thumbWrap) {
       const img = thumbWrap.querySelector("img");
       if (img) {
-        let storedSrc = img.getAttribute("data-thumb-src");
 
-        if (!storedSrc) {
-          // 1) 현재 src에서 ../../resource/ 프리픽스, 쿼리스트링 제거
-          let raw = img.getAttribute("src") || "";
-          // 쿼리 파라미터 제거
-          raw = raw.split("?")[0];
-
-          // ../../resource/ 또는 ./resource/ 또는 resource/ 같은 앞부분 제거
-          raw = raw
-            .replace(/^(\.\.\/)+resource\//, "")
-            .replace(/^\.\/?resource\//, "")
-            .replace(/^resource\//, "");
-
-          // "…/thumbs/…jpg" 꼴이면 그대로 사용
-          if (/\/thumbs\/[^\/]+\.(jpe?g|png|webp)$/i.test(raw)) {
-            storedSrc = raw;
+        // ✅ 백엔드가 인라인(data:)로 내려준 썸네일이면 그대로 유지
+        // (여기서 ../../resource/... 로 바꾸면 다시 안 보일 수 있음)
+        const currentSrc = img.getAttribute("src") || "";
+        if (isDataImageUrl(currentSrc)) {
+          // data-thumb-src가 없으면 최소한 folder 기반으로만 채워둔다(저장용)
+          if (!img.getAttribute("data-thumb-src")) {
+            const folderName = div.getAttribute("data-card") || (title?.textContent || "").trim();
+            if (folderName) img.setAttribute("data-thumb-src", `${folderName}/thumbs/${safeThumbName(folderName)}.jpg`);
           }
-        }
+        } else {
 
-        // 2) 그래도 못 찾았을 때만 최후의 수단으로 folderName 기반 추정
-        if (!storedSrc) {
-          const folderName = div.getAttribute("data-card") || (title?.textContent || "").trim();
-          if (folderName) {
-            // ★ 여기서는 예전 동작과의 하위호환용 "추정값"일 뿐,
-            //    실제로는 대부분 위의 raw 경로에서 이미 구해질 것이다.
-            storedSrc = `${folderName}/thumbs/${safeThumbName(folderName)}.jpg`;
+          let storedSrc = img.getAttribute("data-thumb-src");
+
+          if (!storedSrc) {
+            // 1) 현재 src에서 ../../resource/ 프리픽스, 쿼리스트링 제거
+            let raw = img.getAttribute("src") || "";
+            // 쿼리 파라미터 제거
+            raw = raw.split("?")[0];
+
+            // ../../resource/ 또는 ./resource/ 또는 resource/ 같은 앞부분 제거
+            raw = raw
+              .replace(/^(\.\.\/)+resource\//, "")
+              .replace(/^\.\/?resource\//, "")
+              .replace(/^resource\//, "");
+
+            // "…/thumbs/…jpg" 꼴이면 그대로 사용
+            if (/\/thumbs\/[^\/]+\.(jpe?g|png|webp)$/i.test(raw)) {
+              storedSrc = raw;
+            }
           }
-        }
 
-        if (storedSrc) {
-          img.setAttribute("data-thumb-src", storedSrc);
-          // 브리지 여부와 관계없이 항상 resource 기준 경로로 교정
-          img.src = `../../resource/${storedSrc}`;
+          // 2) 그래도 못 찾았을 때만 최후의 수단으로 folderName 기반 추정
+          if (!storedSrc) {
+            const folderName = div.getAttribute("data-card") || (title?.textContent || "").trim();
+            if (folderName) {
+              // ★ 여기서는 예전 동작과의 하위호환용 "추정값"일 뿐,
+              //    실제로는 대부분 위의 raw 경로에서 이미 구해질 것이다.
+              storedSrc = `${folderName}/thumbs/${safeThumbName(folderName)}.jpg`;
+            }
+          }
+
+          if (storedSrc) {
+            img.setAttribute("data-thumb-src", storedSrc);
+            // 브리지 여부와 관계없이 항상 resource 기준 경로로 교정
+            img.src = `../../resource/${storedSrc}`;
+          }
         }
       }
     }
@@ -1273,37 +1321,18 @@ function enhanceBlocks() {
           }
 
           if (img) {
-            const ts = Date.now().toString();
-
-            // 1) 기본값은 기존 data-thumb-src (이미 enhanceBlocks에서 정리해둔 값)
-            let storedSrc = img.getAttribute("data-thumb-src");
-
-            // 2) 혹시 없으면 현재 src에서 다시 추출 시도
-            if (!storedSrc) {
-              let raw = img.getAttribute("src") || "";
-              raw = raw.split("?")[0];
-              raw = raw
-                .replace(/^(\.\.\/)+resource\//, "")
-                .replace(/^\.\/?resource\//, "")
-                .replace(/^resource\//, "");
-              if (/\/thumbs\/[^\/]+\.(jpe?g|png|webp)$/i.test(raw)) {
-                storedSrc = raw;
-              }
-            }
-
-            // 3) 그래도 없으면 최후 fallback으로 folder 기반 추정
-            if (!storedSrc) {
-              storedSrc = `${folder}/thumbs/${safeThumbName(folder)}.jpg`;
-            }
-
-            img.setAttribute("data-thumb-src", storedSrc);
-            const displaySrc = `../../resource/${storedSrc}?_ts=${ts}`;
-            img.src = displaySrc;
+            // ✅ refresh_thumb 직후에는 로컬 파일 경로로 강제 교정하지 않는다.
+            //    (file:// 제한 환경에서 다시 안 보일 수 있음)
+            //    대신 loadMaster()로 재로드해서 백엔드가 인라인(data:)로 내려준 썸네일을 받는다.
+            img.setAttribute("data-thumb-src", `${folder}/thumbs/${safeThumbName(folder)}.jpg`);
           }
 
           // ✅ 썸네일 변경 내용을 바로 master_content/master_index에 반영
           //   (소스가 없는 경우 썸네일 DOM 제거까지 포함한 상태로 저장)
           queueMetaSave();
+
+          // ✅ 인라인 썸네일을 다시 받기 위해 재로드
+          await loadMaster({ retryThumbs: false, attempt: 0 });
 
           showStatus({
             level: "ok",

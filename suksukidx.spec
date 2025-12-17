@@ -6,8 +6,9 @@ from pathlib import Path
 
 ROOT = Path(SPECPATH).resolve()
 UI = ROOT / "backend" / "ui"
+BIN = ROOT / "backend" / "bin"
 
-# ✅ Ensure build/dist are always created under project ROOT,
+# Ensure build/dist are always created under project ROOT,
 # regardless of where PyInstaller is invoked from (prevents dist/dist, dist/build nesting).
 os.chdir(str(ROOT))
 
@@ -18,6 +19,9 @@ a_datas = [
     (str(UI / "ui.css"),        "backend/ui"),
     (str(UI / "publish.css"),   "backend/ui"),
     (str(UI / "suksukidx.ico"), "backend/ui"),
+    # Native tools (portable)
+    (str(BIN / "ffmpeg.exe"), "backend/bin"),
+    (str(BIN / "poppler"),   "backend/bin/poppler"),
 ]
 
 a = Analysis(

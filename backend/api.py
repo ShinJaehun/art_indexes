@@ -5,6 +5,7 @@ import time
 import os
 import traceback
 import shutil
+import logging
 from datetime import datetime
 import platform
 import subprocess
@@ -12,6 +13,10 @@ import base64
 
 from backend.fsutil import atomic_write_text
 from backend.lockutil import SyncLock, SyncLockError
+
+log = logging.getLogger("suksukidx")
+
+from backend.constants import CSS_PREFIX
 from backend.thumbs import make_thumbnail_for_folder, has_ffmpeg, has_poppler, _safe_name as _thumb_safe_name
 from backend.builder import (
     run_sync_all,
@@ -206,16 +211,16 @@ class MasterApi:
                 # 인라인 실패해도 치명적이면 안 됨
                 continue
 
-        # DEBUG (임시)
-        data_cnt = str(soup).count("data:image/jpeg;base64,")
-        thumb_cnt = len(soup.find_all("img", class_="thumb"))
-        first = None
-        for img in soup.find_all("img", class_="thumb"):
-            first = (img.get("src") or "")[:80]
-            break
-        print(f"[ui-thumb] thumb_cnt={thumb_cnt} data_cnt={data_cnt} first_src={first}")
-
-
+        # DEBUG: (INFO 로그를 과도하게 늘리지 않도록 DEBUG로만)
+        if log.isEnabledFor(logging.DEBUG):
+            data_cnt = str(soup).count("data:image/jpeg;base64,")
+            thumb_cnt = len(soup.find_all("img", class_="thumb"))
+            first = None
+            for img in soup.find_all("img", class_="thumb"):
+                first = (img.get("src") or "")[:80]
+                break
+            log.debug("[ui-thumb] thumb_cnt=%s data_cnt=%s first_src=%s", thumb_cnt, data_cnt, first)
+ 
         return str(soup)
 
     def get_current_index_path(self) -> Dict[str, Any]:
@@ -251,12 +256,63 @@ class MasterApi:
             else:
                 subprocess.Popen(["xdg-open", str(target)])
 
-            print(f"[open_folder] open folder={target}")
+            log.info("[open_folder] open folder=%s", str(target))
             return {"ok": True, "path": str(target.resolve())}
         except Exception as exc:
             msg = f"open_folder failed: {exc}"
-            print(f"[open_folder] {msg}")
+            log.error("[open_folder] %s", msg)
             return {"ok": False, "error": msg}
+
+
+    def _reset_delete_css_assets(self, resource_dir: Path) -> Dict[str, int]:
+        """
+        Reset 시 CSS(master.*.css 포함)를 루트/각 폴더에서 완전 정리
+        - resource/master.*.css
+        - resource/master.css (fallback 케이스)
+        - resource/<folder>/master.*.css
+        - resource/<folder>/master.css
+        """
+        removed_root = 0
+        removed_folders = 0
+
+        # 1) 루트 삭제
+        for p in resource_dir.glob(f"{CSS_PREFIX}.*.css"):
+            try:
+                p.unlink()
+                removed_root += 1
+            except Exception:
+                pass
+        root_plain = resource_dir / f"{CSS_PREFIX}.css"
+        if root_plain.exists():
+            try:
+                root_plain.unlink()
+                removed_root += 1
+            except Exception:
+                pass
+
+        # 2) 각 폴더 삭제
+        try:
+            for d in resource_dir.iterdir():
+                if not d.is_dir() or d.name.startswith(".") or d.name.lower() == "thumbs":
+                    continue
+                for p in d.glob(f"{CSS_PREFIX}.*.css"):
+                    try:
+                        p.unlink()
+                        removed_folders += 1
+                    except Exception:
+                        pass
+                plain = d / f"{CSS_PREFIX}.css"
+                if plain.exists():
+                    try:
+                        plain.unlink()
+                        removed_folders += 1
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        return {"css_root": removed_root, "css_folders": removed_folders}
+
 
     # ---- 전체 초기화(마스터/인덱스/썸네일/레지스트리) ---------------------
     def reset_all(self) -> Dict[str, Any]:
@@ -280,6 +336,9 @@ class MasterApi:
             "registry": False,
             "thumb_dirs": 0,
             "child_indexes": 0,
+            "css_root": 0,
+            "css_folders": 0,
+            "card_ids": 0,
         }
         errors: list[str] = []
 
@@ -295,7 +354,7 @@ class MasterApi:
                         removed["master_content"] = True
                 except Exception as exc:
                     msg = f"master_content 삭제 실패: {exc}"
-                    print(f"[reset] {msg}")
+                    log.error("[reset] %s", msg)
                     errors.append(msg)
 
                 try:
@@ -304,7 +363,7 @@ class MasterApi:
                         removed["master_index"] = True
                 except Exception as exc:
                     msg = f"master_index 삭제 실패: {exc}"
-                    print(f"[reset] {msg}")
+                    log.error("[reset] %s", msg)
                     errors.append(msg)
 
                 # 2) thumbs 디렉토리 전체 삭제
@@ -315,7 +374,7 @@ class MasterApi:
                             removed["thumb_dirs"] += 1
                 except Exception as exc:
                     msg = f"thumbs 삭제 중 오류: {exc}"
-                    print(f"[reset] {msg}")
+                    log.error("[reset] %s", msg)
                     errors.append(msg)
 
                 # 3) child index.html 전부 삭제
@@ -326,35 +385,64 @@ class MasterApi:
                             removed["child_indexes"] += 1
                         except Exception as exc2:
                             msg = f"index.html 삭제 실패({p}): {exc2}"
-                            print(f"[reset] {msg}")
+                            log.error("[reset] %s", msg)
                             errors.append(msg)
                 except Exception as exc:
                     msg = f"index.html 탐색 중 오류: {exc}"
-                    print(f"[reset] {msg}")
+                    log.error("[reset] %s", msg)
                     errors.append(msg)
 
-                # 4) 레지스트리 삭제
+                # 4) CSS 정리 (master.*.css 포함)
+                try:
+                    css_removed = self._reset_delete_css_assets(resource_dir)
+                    removed["css_root"] = css_removed.get("css_root", 0)
+                    removed["css_folders"] = css_removed.get("css_folders", 0)
+                except Exception as exc:
+                    msg = f"CSS 삭제 중 오류: {exc}"
+                    log.error("[reset] %s", msg)
+                    errors.append(msg)                    
+
+                # 5) card id 파일(.suksukidx.id) 전부 삭제 (완전 초기화)
+                try:
+                    for p in resource_dir.rglob(".suksukidx.id"):
+                        try:
+                            if p.is_file():
+                                p.unlink()
+                                removed["card_ids"] += 1
+                        except Exception as exc2:
+                            msg = f".suksukidx.id 삭제 실패({p}): {exc2}"
+                            log.error("[reset] %s", msg)
+                            errors.append(msg)
+                except Exception as exc:
+                    msg = f".suksukidx.id 탐색 중 오류: {exc}"
+                    log.error("[reset] %s", msg)
+                    errors.append(msg)
+
+                # 6) 레지스트리 삭제
                 try:
                     if registry_path.exists():
                         registry_path.unlink()
                         removed["registry"] = True
                 except Exception as exc:
                     msg = f"레지스트리 삭제 실패: {exc}"
-                    print(f"[reset] {msg}")
+                    log.error("[reset] %s", msg)
                     errors.append(msg)
 
-            print(
-                "[reset] done "
-                f"master_content={removed['master_content']} "
-                f"master_index={removed['master_index']} "
-                f"registry={removed['registry']} "
-                f"thumb_dirs={removed['thumb_dirs']} "
-                f"child_indexes={removed['child_indexes']}"
+            log.info(
+                "[reset] done master_content=%s master_index=%s registry=%s thumb_dirs=%s child_indexes=%s css_root=%s css_folders=%s card_ids=%s",
+                removed["master_content"],
+                removed["master_index"],
+                removed["registry"],
+                removed["thumb_dirs"],
+                removed["child_indexes"],
+                removed["css_root"], 
+                removed["css_folders"],
+                removed["card_ids"]
             )
 
         except SyncLockError as exc:
             msg = f"LOCKED: {exc}"
-            print(f"[reset] {msg}")
+            log.error("[reset] %s", msg)
             errors.append(msg)
             return {
                 "ok": False,
@@ -364,7 +452,7 @@ class MasterApi:
             }
         except Exception as exc:
             msg = f"EXCEPTION: {exc}"
-            print(f"[reset] {msg}")
+            log.error("[reset] %s", msg)
             errors.append(msg)
 
         return {
@@ -408,7 +496,7 @@ class MasterApi:
         - 곧바로 master_index / child index까지 재빌드(_push_master_to_resource)
         """
         if "<h2>" not in html and "&lt;h2&gt;" in html:
-            print("[save_master] WARN: incoming HTML is already escaped")
+            log.warning("[save_master] incoming HTML is already escaped")
 
         fixed_html = persist_thumbs_in_master(html, self._p_resource_dir())
 
@@ -440,7 +528,7 @@ class MasterApi:
             blocks = self._push_master_to_resource()
         except Exception as exc:
             msg = f"_push_master_to_resource 실패: {exc}"
-            print(f"[save_master] {msg}")
+            log.error("[save_master] %s", msg)
             errors.append(msg)
 
         return {
@@ -457,17 +545,15 @@ class MasterApi:
         if not master_html:
             # Case B: master_index는 있는데 master_content만 없는 경우 → 의도적 삭제로 간주, 푸시 스킵
             if (not master_content.exists()) and master_index.exists():
-                print(
-                    "[push] skip: master_content missing while master_index exists "
-                    "(treat as intentional delete; no bootstrap)"
-                )
+                log.info("[push] skip: master_content missing while master_index exists (treat as intentional delete; no bootstrap)")
+
             else:
                 # 일반 보호: 내용이 비거나 파일이 없으면 푸시 불가
-                print("[push] no master_content.html, skip")
+                log.info("[push] no master_content.html, skip")
             return 0
 
         if BeautifulSoup is None:
-            print("[push] bs4 missing; cannot safely render without sanitizer/dedupe")
+            log.error("[push] bs4 missing; cannot safely render without sanitizer/dedupe")
             return 0
 
         soup = BeautifulSoup(master_html, "html.parser")
@@ -479,7 +565,7 @@ class MasterApi:
             folder_id_map = ensure_card_ids(resource_dir)
         except Exception as exc:
             folder_id_map = {}
-            print(f"[id] WARN: ensure_card_ids failed in push: {exc}")
+            log.warning("[id] ensure_card_ids failed in push: %s", str(exc))
 
         cards_for_master: List[Dict[str, Any]] = []
 
@@ -491,7 +577,7 @@ class MasterApi:
                 continue
             card_title = heading.get_text(strip=True)
             if not card_title:
-                print("[push] WARN: empty <h2> text in a .card block; skipped")
+                log.warning("[push] empty <h2> text in a .card block; skipped")
                 continue
             block_count += 1
 
@@ -546,7 +632,7 @@ class MasterApi:
             if card_id:
                 card_div["data-card-id"] = card_id
             else:
-                print(f"[id] WARN: no card_id for title='{card_title}'")
+                log.warning("[id] no card_id for title='%s'", card_title)
 
             # sanitizer 메트릭 활성화
             cleaned_div_html, san_metrics = sanitize_for_publish(
@@ -566,13 +652,14 @@ class MasterApi:
 
             # 카드별 상세 로그
             if SAN_VERBOSE and any(san_metrics.values()):
-                print(
-                    f"[san] card='{card_title}' "
-                    f"removed_nodes={san_metrics['removed_nodes']} "
-                    f"removed_attrs={san_metrics['removed_attrs']} "
-                    f"unwrapped_tags={san_metrics['unwrapped_tags']} "
-                    f"blocked_urls={san_metrics['blocked_urls']}"
-                )
+                log.info(
+                    "[san] card='%s' removed_nodes=%s removed_attrs=%s unwrapped_tags=%s blocked_urls=%s",
+                    card_title,
+                    san_metrics.get("removed_nodes", 0),
+                    san_metrics.get("removed_attrs", 0),
+                    san_metrics.get("unwrapped_tags", 0),
+                    san_metrics.get("blocked_urls", 0),
+                )                
 
             cleaned_div_html = ensure_thumb_in_head(
                 cleaned_div_html, card_title, resource_dir
@@ -619,9 +706,7 @@ class MasterApi:
         try:
             self._write(self._p_master_content(), str(soup))
         except Exception as exc:
-            print(
-                f"[push] WARN: failed to persist data-card-id into master_content: {exc}"
-            )
+            log.warning("[push] failed to persist data-card-id into master_content: %s", str(exc))
 
         # child
         for card_div in soup.find_all("div", class_="card"):
@@ -635,7 +720,7 @@ class MasterApi:
             # 🔹 파일시스템에 폴더가 실제로 존재할 때만 child index 생성
             folder_path = resource_dir / title
             if not (folder_path.exists() and folder_path.is_dir()):
-                print(f"[push] skip child for missing folder: {title}")
+                log.info("[push] skip child for missing folder: %s", title)
                 continue
 
             card_id = folder_id_map.get(title)
@@ -662,16 +747,17 @@ class MasterApi:
             )
             self._write(folder_path / "index.html", child_html)
 
-        print(f"[push] ok=True blocks={block_count} css={css_basename}")
+        log.info("[push] ok=True blocks=%s css=%s", block_count, css_basename)
 
         if hidden_count:
-            print(f"[push] meta: hidden={hidden_count}")
+            log.info("[push] meta: hidden=%s", hidden_count)
+
         return block_count
 
     # ---- 동기화 ----
     def sync(self) -> Dict[str, Any]:
         """
-        Lock & Error Safety 적용 + print 로깅
+        Lock & Error Safety 적용 + logging 기반 실행 로그
         - 중복 실행 방지: backend/.sync.lock 파일 기반
         - 예외 발생 시 반환하고, traceback 일부를 errors에 포함
         - 기존 메트릭/리턴 형태 최대한 유지
@@ -679,7 +765,7 @@ class MasterApi:
         start_ts = time.perf_counter()
         base_dir = self._p_base_dir()
         resource_dir = self._p_resource_dir()
-        print(f"[sync] start base={base_dir} resource={resource_dir}")
+        log.info("[sync] start base=%s resource=%s", str(base_dir), str(resource_dir))
 
         # 잠금 만료시간(초): 기본 3600, 환경변수로 조절 가능
         stale_after = int(os.getenv("SUKSUKIDX_LOCK_STALE_AFTER", "3600"))
@@ -715,8 +801,7 @@ class MasterApi:
                 )
                 scan_ok = scan_rc == 0
                 metrics["scanRc"] = scan_rc
-                print(f"[scan] ok={scan_ok} rc={scan_rc}")
-
+                log.info("[scan] ok=%s rc=%s", scan_ok, scan_rc)
                 # DEBUG: 강제 실패 주입
                 forced_scan_fail = os.getenv("SUKSUKIDX_FAIL_SCAN") == "1"
                 if forced_scan_fail:
@@ -737,12 +822,11 @@ class MasterApi:
                     if (not mc.exists()) and (not mi.exists()):
                         rebuild_result = self.rebuild_master()
                         added_blocks = (rebuild_result or {}).get("added", 0)
-                        print(
-                            f"[bootstrap] coldstart: created master_content.html with {added_blocks} blocks"
-                        )
+                        log.info("[bootstrap] coldstart: created master_content.html with %s blocks", added_blocks)
+
                 except Exception as exc:
                     errors.append(f"부트스트랩 실패: {exc}")
-                    print(f"[bootstrap] failed: {exc}")
+                    log.error("[bootstrap] failed: %s", str(exc))
 
                 # 3) 신규 카드 자동 머지 (기본 ON) + ID 기반 rename 반영
                 try:
@@ -757,16 +841,17 @@ class MasterApi:
                             current_master_html
                         )
 
-                        # ✅ 내용이 실제로 바뀌었으면, 새 카드가 없더라도 저장
+                        # 내용이 실제로 바뀌었으면, 새 카드가 없더라도 저장
                         if merged_html != current_master_html:
                             self._write(master_content_path, merged_html)
 
                         if added_count > 0:
                             metrics["foldersAdded"] = added_count
-                            print(f"[merge] added cards={added_count}")
+                            log.info("[merge] added cards=%s", added_count)
+
                 except Exception as exc:
                     errors.append(f"신규 카드 자동 병합 실패: {exc}")
-                    print(f"[merge] failed: {exc}")
+                    log.error("[merge] failed: %s", str(exc))
 
                 # 4) prune 적용: 파일시스템 기준으로 사라진 폴더 정리
                 prune_removed = 0
@@ -794,13 +879,8 @@ class MasterApi:
                             or prune_child_built != 0
                             or prune_thumbs != 0
                         ):
-                            print(
-                                "[prune] applied: "
-                                f"removed_from_master={prune_removed} "
-                                f"child_built={prune_child_built} "
-                                f"thumbs_deleted={prune_thumbs} "
-                                f"delete_thumbs={delete_thumbs}"
-                            )
+                            log.info("[prune] applied: removed_from_master=%s child_built=%s thumbs_deleted=%s delete_thumbs=%s",
+                                prune_removed, prune_child_built, prune_thumbs, delete_thumbs)
 
                         # 레지스트리 GC: prune으로 제거된 card_id 들을 registry 에서도 정리
                         removed_ids = prune_result.get("removed_card_ids") or []
@@ -808,17 +888,16 @@ class MasterApi:
                             try:
                                 removed_reg = self._registry.remove_by_card_id(cid)
                                 if removed_reg:
-                                    print(
-                                        f"[registry] GC removed entry from prune id={cid}"
-                                    )
+                                    log.info("[registry] GC removed entry from prune id=%s", cid)
+
                             except Exception as exc:
                                 msg = f"레지스트리 GC 실패(id={cid}): {exc}"
-                                print(f"[registry] {msg}")
+                                log.error("[registry] %s", msg)
                                 errors.append(msg)
 
                 except Exception as exc:
                     errors.append(f"프룬 적용 실패: {exc}")
-                    print(f"[prune] failed: {exc}")
+                    log.error("[prune] failed: %s", str(exc))
 
                 metrics["prunedFromMaster"] = prune_removed
                 metrics["childRebuilt"] = prune_child_built
@@ -838,7 +917,7 @@ class MasterApi:
                 except Exception as exc:
                     push_ok = False
                     errors.append(f"파일 반영(푸시) 실패: {exc}")
-                    print(f"[push] failed: {exc}")
+                    log.error("[push] failed: %s", str(exc))
 
                 # 6) ID 레지스트리 부트스트랩(현재는 항상 ON)
                 #    - 반드시 push 이후에 실행해서
@@ -871,18 +950,16 @@ class MasterApi:
                                         folder=folder,
                                         thumb_source=None,
                                     )
-                                    print(
-                                        f"[registry] cleared thumb_source for id={cid} "
-                                        f"(folder={folder}, file missing)"
-                                    )
+                                    log.info("[registry] cleared thumb_source for id=%s (folder=%s, file missing)", cid, folder)
+
                                 except Exception as exc2:
                                     msg = f"레지스트리 thumb_source 정리 실패(id={cid}): {exc2}"
-                                    print(f"[registry] {msg}")
+                                    log.error("[registry] %s", msg)
                                     errors.append(msg)
 
                 except Exception as exc:
                     errors.append(f"ID 레지스트리 갱신 실패: {exc}")
-                    print(f"[registry] refresh failed: {exc}")
+                    log.error("[registry] refresh failed: %s", str(exc))
 
                 overall_ok = scan_ok and push_ok
                 metrics["durationMs"] = int((time.perf_counter() - start_ts) * 1000)
@@ -894,14 +971,13 @@ class MasterApi:
                 metrics["sanUnwrappedTags"] = san.get("unwrapped_tags", 0)
                 metrics["sanBlockedUrls"] = san.get("blocked_urls", 0)
 
-                print(
-                    f"[sync] done ok={overall_ok} scanOk={scan_ok} pushOk={push_ok} "
-                    f"blocks={blocks_updated} durationMs={metrics['durationMs']} "
-                    f"sanRemovedNodes={metrics['sanRemovedNodes']} "
-                    f"sanRemovedAttrs={metrics['sanRemovedAttrs']} "
-                    f"sanUnwrappedTags={metrics['sanUnwrappedTags']} "
-                    f"sanBlockedUrls={metrics['sanBlockedUrls']}"
-                )
+                log.info("[sync] done ok=%s scanOk=%s pushOk=%s blocks=%s durationMs=%s sanRemovedNodes=%s sanRemovedAttrs=%s sanUnwrappedTags=%s sanBlockedUrls=%s",
+                    overall_ok, scan_ok, push_ok, blocks_updated,
+                    metrics.get("durationMs"),
+                    metrics.get("sanRemovedNodes"),
+                    metrics.get("sanRemovedAttrs"),
+                    metrics.get("sanUnwrappedTags"),
+                    metrics.get("sanBlockedUrls"))
 
                 dbg_flags = []
                 if os.getenv("SUKSUKIDX_FAIL_SCAN") == "1":
@@ -909,7 +985,7 @@ class MasterApi:
                 if os.getenv("SUKSUKIDX_FAIL_PUSH") == "1":
                     dbg_flags.append("FAIL_PUSH")
                 if dbg_flags:
-                    print(f"[sync] debugFlags={','.join(dbg_flags)}")
+                    log.info("[sync] debugFlags=%s", ",".join(dbg_flags))
 
                 return {
                     "ok": overall_ok,
@@ -921,9 +997,8 @@ class MasterApi:
 
         except SyncLockError as exc:
             duration_ms = int((time.perf_counter() - start_ts) * 1000)
-            print(
-                f"[sync] LOCKED: {exc} (lock={self._lock_path}, stale_after={stale_after}s)"
-            )
+            log.error("[sync] LOCKED: %s (lock=%s, stale_after=%ss)", str(exc), str(self._lock_path), stale_after)
+
             return {
                 "ok": False,
                 "scanOk": None,
@@ -948,7 +1023,7 @@ class MasterApi:
         except Exception as exc:
             duration_ms = int((time.perf_counter() - start_ts) * 1000)
             tb = traceback.format_exc(limit=5)
-            print(f"[sync] EXCEPTION: {exc}\n{tb}")
+            log.error("[sync] EXCEPTION: %s\n%s", str(exc), tb)
             return {
                 "ok": False,
                 "scanOk": None,
@@ -1055,7 +1130,7 @@ class MasterApi:
 
                 # 이름이 다르면 rename 로그
                 if old_name != name:
-                    print(f"[id] rename detected: {old_name} -> {name} (id={card_id})")
+                    log.info("[id] rename detected: %s -> %s (id=%s)", old_name, name, card_id)
 
                 # data-card / data-card-id / <h2> 를 새 폴더명으로 정렬
                 card_el["data-card"] = name
@@ -1080,10 +1155,7 @@ class MasterApi:
                 ]
                 for dup in dup_cards:
                     old_id = (dup.get("data-card-id") or "").strip()
-                    print(
-                        f"[id] remove duplicate card for folder '{name}' "
-                        f"(old_id={old_id}, keep_id={card_id})"
-                    )
+                    log.warning("[id] remove duplicate card for folder '%s' (old_id=%s, keep_id=%s)", name, old_id, card_id)
                     dup.decompose()
 
                 # 이 이름에 대해선 주 카드 하나만 남기도록 재정리
@@ -1194,21 +1266,19 @@ class MasterApi:
                     inner = prefix_resource_paths_for_root(inner)
                     self._write(master_content, inner)
                     html = inner
-                    print("[delete] bootstrap master_content from master_index")
+                    log.info("[delete] bootstrap master_content from master_index")
+
                 except Exception as exc:
-                    print(f"[delete] WARN: bootstrap from master_index failed: {exc}")
+                    log.warning("[delete] bootstrap from master_index failed: %s", str(exc))
 
         # 2차: 그래도 비어 있으면, 최후 수단으로 rebuild_master() 사용
         if not html.strip():
             try:
                 rb = self.rebuild_master()
-                print(
-                    f"[delete] fallback rebuild_master used: "
-                    f"added={rb.get('added') if isinstance(rb, dict) else '??'}"
-                )
+                log.info("[delete] fallback rebuild_master used: added=%s", (rb.get("added") if isinstance(rb, dict) else "??"))
                 html = self._read(master_content)
             except Exception as exc:
-                print(f"[delete] WARN: rebuild_master fallback failed: {exc}")
+                log.warning("[delete] rebuild_master fallback failed: %s", str(exc))
 
         # 3차: 그래도 비어 있으면 진짜 에러
         if not html.strip():
@@ -1235,7 +1305,7 @@ class MasterApi:
         except Exception as exc:
             entry = None
             msg = f"레지스트리 조회 실패(id={card_id}): {exc}"
-            print(f"[delete] {msg}")
+            log.error("[delete] %s", msg)
             errors.append(msg)
         else:
             if entry and entry.get("folder"):
@@ -1247,9 +1317,7 @@ class MasterApi:
                 folder_id_map = ensure_card_ids(resource_dir)
             except Exception as exc:
                 folder_id_map = {}
-                print(
-                    f"[delete] WARN: ensure_card_ids failed in delete_card_by_id: {exc}"
-                )
+                log.warning("[delete] ensure_card_ids failed in delete_card_by_id: %s", str(exc))
 
             if folder_id_map:
                 id_to_folder = {v: k for k, v in folder_id_map.items()}
@@ -1277,16 +1345,15 @@ class MasterApi:
                     shutil.rmtree(folder_path)
                     deleted_folder = True
                 else:
-                    print(
-                        f"[delete] WARN: folder not found or not a dir: {folder_path}"
-                    )
+                    log.warning("[delete] folder not found or not a dir: %s", str(folder_path))
+
             except Exception as exc:
                 msg = f"폴더 삭제 실패: {exc}"
-                print(f"[delete] {msg}")
+                log.error("[delete] %s", msg)
                 errors.append(msg)
         else:
             msg = "폴더명을 결정할 수 없어 파일시스템 삭제를 건너뜁니다."
-            print(f"[delete] {msg}")
+            log.warning("[delete] %s", msg)
             errors.append(msg)
 
         # 5) master_content에서 카드 블록 제거
@@ -1296,7 +1363,7 @@ class MasterApi:
             removed_from_master = True
         except Exception as exc:
             msg = f"master_content 카드 제거/저장 실패: {exc}"
-            print(f"[delete] {msg}")
+            log.error("[delete] %s", msg)
             errors.append(msg)
 
         # 6) master_index / child index 재빌드
@@ -1306,7 +1373,7 @@ class MasterApi:
         except Exception as exc:
             push_ok = False
             msg = f"인덱스 재생성(_push_master_to_resource) 실패: {exc}"
-            print(f"[delete] {msg}")
+            log.error("[delete] %s", msg)
             errors.append(msg)
 
         # 7) 레지스트리에서 이 card_id 제거 (master에서 제거된 경우에만)
@@ -1314,10 +1381,10 @@ class MasterApi:
             if removed_from_master:
                 removed_reg = self._registry.remove_by_card_id(card_id)
                 if removed_reg:
-                    print(f"[registry] removed entry for id={card_id}")
+                    log.info("[registry] removed entry for id=%s", card_id)
         except Exception as exc:
             msg = f"레지스트리 정리 실패(id={card_id}): {exc}"
-            print(f"[registry] {msg}")
+            log.error("[registry] %s", msg)
             errors.append(msg)
 
         ok = removed_from_master and push_ok and not errors
@@ -1368,7 +1435,7 @@ class MasterApi:
                 folder_id_map = ensure_card_ids(self._p_resource_dir())
             except Exception as exc:
                 folder_id_map = {}
-                print(f"[thumb] WARN: ensure_card_ids failed in refresh_thumb: {exc}")
+                log.warning("[thumb] ensure_card_ids failed in refresh_thumb: %s", str(exc))
 
             card_id = folder_id_map.get(folder_name)
 
@@ -1384,9 +1451,8 @@ class MasterApi:
                             thumb_source=src,
                         )
                     except Exception as exc:
-                        print(
-                            f"[thumb] WARN: registry update failed for {folder_name}: {exc}"
-                        )
+                        log.warning("[thumb] registry update failed for %s: %s", folder_name, str(exc))
+
                 return {
                     "ok": True,
                     "source": src,
@@ -1402,13 +1468,10 @@ class MasterApi:
                 try:
                     thumb_file.unlink()
                     thumb_deleted = True
-                    print(
-                        f"[thumb] removed thumb for '{folder_name}' (no source or error): {thumb_file}"
-                    )
+                    log.info("[thumb] removed thumb for '%s' (no source or error): %s", folder_name, str(thumb_file))
+
                 except Exception as exc:
-                    print(
-                        f"[thumb] WARN: failed to delete thumb for {folder_name}: {exc}"
-                    )
+                    log.warning("[thumb] failed to delete thumb for %s: %s", folder_name, str(exc))
 
             # 레지스트리에서도 thumb_source 정리
             if card_id:
@@ -1419,9 +1482,7 @@ class MasterApi:
                         thumb_source=None,
                     )
                 except Exception as exc:
-                    print(
-                        f"[thumb] WARN: registry update(clear) failed for {folder_name}: {exc}"
-                    )
+                    log.warning("[thumb] registry update(clear) failed for %s: %s", folder_name, str(exc))
 
             # 1) 캡처 후보 자체가 없는 경우(src is None)
             #    → 정상적인 "제거" 케이스로 간주: 오류 아님
@@ -1485,19 +1546,13 @@ class MasterApi:
         report = reporter.make_report()
         try:
             summary = report.summary or {}
-            print(
-                "[prune] DRY-RUN: "
-                f"fs={summary.get('fs_slugs')} "
-                f"master={summary.get('master_content_slugs')} "
-                f"index={summary.get('master_index_slugs')}"
-            )
-            print(
-                "[prune] DRY-RUN: "
-                f"missing_in_fs={len(report.folders_missing_in_fs or [])} "
-                f"child_missing={len(report.child_indexes_missing or [])} "
-                f"orphans_in_master_only={len(report.orphans_in_master_index_only or [])} "
-                f"thumbs_orphans={len(report.thumbs_orphans or [])}"
-            )
+            log.info("[prune] DRY-RUN: fs=%s master=%s index=%s",
+                     summary.get("fs_slugs"), summary.get("master_content_slugs"), summary.get("master_index_slugs"))
+            log.info("[prune] DRY-RUN: missing_in_fs=%s child_missing=%s orphans_in_master_only=%s thumbs_orphans=%s",
+                     len(report.folders_missing_in_fs or []),
+                     len(report.child_indexes_missing or []),
+                     len(report.orphans_in_master_index_only or []),
+                     len(report.thumbs_orphans or []))
         except Exception:
             pass
         return report.to_dict()
@@ -1526,13 +1581,9 @@ class MasterApi:
         )
         result = applier.apply(report)
         try:
-            print(
-                "[prune] APPLY: "
-                f"removed_from_master={result.get('removed_from_master', 0)} "
-                f"child_built={result.get('child_built', 0)} "
-                f"thumbs_deleted={result.get('thumbs_deleted', 0)} "
-                f"delete_thumbs={delete_thumbs}"
-            )
+            log.info("[prune] APPLY: removed_from_master=%s child_built=%s thumbs_deleted=%s delete_thumbs=%s",
+                     result.get("removed_from_master", 0), result.get("child_built", 0),
+                     result.get("thumbs_deleted", 0), delete_thumbs)
         except Exception:
             pass
         return result
@@ -1557,9 +1608,9 @@ class MasterApi:
             else:
                 subprocess.Popen(["xdg-open", str(folder)])
 
-            print(f"[open_index_folder] open folder={folder}")
+            log.info("[open_index_folder] open folder=%s", str(folder))
             return {"ok": True, "path": str(folder.resolve())}
         except Exception as exc:
             msg = f"open_index_folder failed: {exc}"
-            print(f"[open_index_folder] {msg}")
+            log.error("[open_index_folder] %s", msg)
             return {"ok": False, "error": msg}

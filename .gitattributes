@@ -1,0 +1,22 @@
+# 기본: 텍스트는 LF로 정규화
+* text=auto eol=lf
+
+# 확실히 LF 고정하고 싶은 파일들
+*.py     text eol=lf
+*.js     text eol=lf
+*.html   text eol=lf
+*.css    text eol=lf
+*.spec   text eol=lf
+*.ps1    text eol=lf
+*.sh     text eol=lf
+
+# 바이너리(변환 금지)
+*.ico    -text
+*.exe    -text
+*.png    -text
+*.jpg    -text
+*.jpeg   -text
+*.webp   -text
+*.pdf    -text
+*.mp4    -text
+*.zip    -text

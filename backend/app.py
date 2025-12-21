@@ -4,6 +4,7 @@ import webview
 from typing import Optional
 from typing import Any
 import os
+import tempfile
 import logging
 from logging.handlers import RotatingFileHandler
 
@@ -68,34 +69,55 @@ class _StreamToLogger:
         self._buf = ""
 
 def _setup_logging(base_dir: Path) -> logging.Logger:
-    logs_dir = base_dir / "logs"
-    _ensure_dir(logs_dir)
-    log_path = logs_dir / "suksukidx.log"
-
     logger = logging.getLogger("suksukidx")
     logger.setLevel(logging.INFO)
     logger.propagate = False
 
-    # 핸들러 중복 방지(재실행/재주입 대비)
-    if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+    # 핸들러 중복 방지
+    if any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+        return logger
+
+    fmt = logging.Formatter(
+        fmt="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+    def _attach_file_handler(log_path: Path) -> None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         fh = RotatingFileHandler(
             str(log_path),
             maxBytes=2 * 1024 * 1024,
             backupCount=5,
             encoding="utf-8",
         )
-        fmt = logging.Formatter(
-            fmt="%(asctime)s [%(levelname)s] %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
         fh.setFormatter(fmt)
         logger.addHandler(fh)
+
+    # 1) 기본: base_dir/logs
+    try:
+        logs_dir = base_dir / "logs"
+        log_path = logs_dir / "suksukidx.log"
+        _attach_file_handler(log_path)
+    except Exception:
+        # 2) fallback: %TEMP%/suksukidx/logs
+        try:
+            tmp_base = Path(tempfile.gettempdir()) / "suksukidx"
+            log_path = tmp_base / "logs" / "suksukidx.log"
+            _attach_file_handler(log_path)
+        except Exception:
+            # 3) 최후: 파일 로그 포기(그래도 앱은 떠야 함)
+            logger.addHandler(logging.NullHandler())
 
     # stdout/stderr를 파일 로그로 흡수(콘솔 OFF 환경에서도 print 로그를 남기기 위함)
     sys.stdout = _StreamToLogger(logger, logging.INFO)   # type: ignore[assignment]
     sys.stderr = _StreamToLogger(logger, logging.ERROR)  # type: ignore[assignment]
 
-    logger.info("[log] started (path=%s)", str(log_path))
+    # log_path가 없는 경우도 있으니 방어
+    try:
+        logger.info("[log] started")
+    except Exception:
+        pass
+
     return logger
 
 
@@ -135,11 +157,6 @@ def _resolve_icon_path(base_dir: Path) -> Optional[Path]:
 
 def main():
     base_dir = _resolve_base_dir()
-    logger = _setup_logging(base_dir)
-
-    # logs/resource 루트 자동 생성
-    resource_dir = base_dir / RESOURCE_DIR
-    _ensure_dir(resource_dir)
 
     # Program Files 등 권한 제한 경로 감지 시 안내 후 차단/안전 종료 (B안)
     if getattr(sys, "frozen", False) and _is_protected_install_dir(base_dir):
@@ -149,9 +166,15 @@ def main():
             "- suksukidx 폴더 전체를 바탕화면/문서/다운로드 같은 사용자 폴더로 옮긴 뒤 실행하세요.\n\n"
             f"현재 경로:\n{base_dir}"
         )
-        logger.error("[guard] blocked in protected dir: %s", str(base_dir))
         _show_error_box("쑥쑥인덱스 실행 불가", msg)
         raise SystemExit(2)
+
+    # 가드 통과 후에만 로깅/리소스 준비
+    logger = _setup_logging(base_dir)
+
+    # logs/resource 루트 자동 생성
+    resource_dir = base_dir / RESOURCE_DIR
+    _ensure_dir(resource_dir)
 
     index_path = _resolve_index_path(base_dir)
     if index_path is None:

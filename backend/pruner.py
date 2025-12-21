@@ -6,6 +6,9 @@ from pathlib import Path
 import json
 import re
 import sys
+import logging
+
+log = logging.getLogger("suksukidx")
 
 try:
     from .fsutil import atomic_write_text
@@ -35,8 +38,10 @@ MASTER_CONTENT_PATH = Path(BACKEND_DIR) / MASTER_CONTENT
 MASTER_INDEX_PATH = Path(RESOURCE_DIR) / MASTER_INDEX
 
 _HIDDEN_DIR = re.compile(r"^(\.|__pycache__|_tmp|_cache)$", re.I)
-_ROOT_SHARED_DIRS = {"thumbs", "css"}  # 루트 공용 폴더 제외 목록(필요 시 추가)
 
+# 루트 공용 폴더 제외 목록
+# - thumbs: (구버전/테스트 잔재) 루트 공용 thumbs 폴더가 있을 수 있음
+_ROOT_SHARED_DIRS = {"thumbs"}
 
 def list_fs_slugs(resource_root: str | Path) -> Set[str]:
     root = Path(resource_root)
@@ -556,16 +561,17 @@ def _main(argv: List[str]) -> int:
             delete_thumbs=args.delete_thumbs,
         )
         result = applier.apply(report)
-        print("== Prune Applied ==")
-        print(f"- removed_from_master: {result['removed_from_master']}")
-        print(f"- child_built       : {result['child_built']}")
-        print(f"- thumbs_deleted    : {result['thumbs_deleted']}")
+        log.info("== Prune Applied ==")
+        log.info("- removed_from_master: %s", result.get("removed_from_master"))
+        log.info("- child_built       : %s", result.get("child_built"))
+        log.info("- thumbs_deleted    : %s", result.get("thumbs_deleted"))
+
     else:
         if args.json:
-            print(report.to_json())
+            log.info(report.to_json())
         else:
             # default to pretty if --print or nothing provided
-            print(report.to_pretty())
+            log.info(report.to_pretty())
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import re, unicodedata
 from io import BytesIO
 import os
 import shutil
+import logging
 
 try:
     from .fsutil import atomic_write_bytes
@@ -14,6 +15,8 @@ except ImportError:  # 스크립트 모드 대비
 
 # ANNO: Windows 배포를 전제로 exe 동봉 경로를 우선 탐색하되, PATH에도 의존 가능.
 BASE_DIR = Path(__file__).parent
+log = logging.getLogger("suksukidx")
+
 BIN_DIR = BASE_DIR / "bin"
 FFMPEG_EXE = BIN_DIR / "ffmpeg.exe"
 PDFTOPPM_EXE = BIN_DIR / "poppler" / "pdftoppm.exe"  # bin/poppler
@@ -39,6 +42,28 @@ def has_poppler() -> bool:
         return True
     return shutil.which("pdftoppm") is not None and shutil.which("pdfinfo") is not None
 
+ 
+def _subprocess_no_window_kwargs() -> dict:
+    """
+    Windows 콘솔 깜빡임 방지용 subprocess 옵션.
+    - CREATE_NO_WINDOW + STARTUPINFO(SW_HIDE)
+    """
+    if os.name != "nt":
+        return {}
+    kw: dict = {}
+    try:
+        kw["creationflags"] = subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    try:
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = subprocess.SW_HIDE
+        kw["startupinfo"] = si
+    except Exception:
+        pass
+    return kw
+
 
 def _run(cmd: list[str]) -> tuple[int, str, str]:
     """
@@ -47,7 +72,8 @@ def _run(cmd: list[str]) -> tuple[int, str, str]:
     - 한글/이모지 섞여도 예외 없이 디코드
     """
     try:
-        p = subprocess.run(cmd, capture_output=True, text=False, shell=False)
+        kw = _subprocess_no_window_kwargs()
+        p = subprocess.run(cmd, capture_output=True, text=False, shell=False, **kw)
         out = (p.stdout or b"").decode("utf-8", errors="ignore")
         err = (p.stderr or b"").decode("utf-8", errors="ignore")
         return p.returncode, out, err
@@ -105,6 +131,7 @@ def _pdf_num_pages(pdf_path: Path) -> int | None:
     pdfinfo = _which(PDFINFO_EXE, "pdfinfo")
     try:
         # 강제 UTF-8 + 에러 무시 (Windows cp949 문제 회피)
+        kw = _subprocess_no_window_kwargs()
         p = subprocess.run(
             [pdfinfo, str(pdf_path)],
             capture_output=True,
@@ -112,6 +139,7 @@ def _pdf_num_pages(pdf_path: Path) -> int | None:
             encoding="utf-8",
             errors="ignore",
             shell=False,
+            **kw,
         )
         if p.returncode != 0:
             return None
@@ -156,13 +184,11 @@ def make_pdf_thumb(pdf_path: Path, out_jpg: Path, dpi: int = 144) -> bool:
     if rc != 0:
         # ▼ 추가: 암호 문서면 조용히 스킵(로그만 친절히 남김)
         if "Incorrect password" in err or "password" in err.lower():
-            print(
-                f"[thumb] PDF is password-protected, skip: {pdf_path}", file=sys.stderr
-            )
+            log.warning("[thumb] PDF is password-protected, skip: %s", str(pdf_path))
         else:
-            print(
-                f"[thumb] PDF->JPG FAIL rc={rc}\nCMD: {shlex.join(cmd)}\nSTDERR:\n{err}",
-                file=sys.stderr,
+            log.error(
+                "[thumb] PDF->JPG FAIL rc=%s CMD=%s STDERR=%s",
+                rc, shlex.join(cmd), err
             )
         _cleanup_tmp_dir(tmp_dir)
         return False
@@ -175,7 +201,7 @@ def make_pdf_thumb(pdf_path: Path, out_jpg: Path, dpi: int = 144) -> bool:
         alts = list(tmp_dir.glob(tmp_prefix.name + "*.jpg"))
         made = alts[0] if alts else None
         if not made:
-            print(f"[thumb] PDF->JPG MISSING (tmp in {tmp_dir})", file=sys.stderr)
+            log.error("[thumb] PDF->JPG MISSING (tmp in %s)", str(tmp_dir))
             _cleanup_tmp_dir(tmp_dir)
             return False
 
@@ -183,7 +209,7 @@ def make_pdf_thumb(pdf_path: Path, out_jpg: Path, dpi: int = 144) -> bool:
     try:
         data = Path(made).read_bytes()
         atomic_write_bytes(str(out_jpg), data)
-        print(f"[thumb] PDF->JPG OK (mid={mid_page}): {out_jpg}")
+        log.info("[thumb] PDF->JPG OK (mid=%s): %s", mid_page, str(out_jpg))
         return True
     finally:
         _cleanup_tmp_dir(tmp_dir)
@@ -220,19 +246,19 @@ def make_video_thumb(video_path: Path, out_jpg: Path, width: int = 640) -> bool:
         ]
         rc, out, err = _run(cmd)
         if rc != 0:
-            print(
-                f"[thumb] VIDEO->JPG FAIL rc={rc}\nCMD: {shlex.join(cmd)}\nSTDERR:\n{err}",
-                file=sys.stderr,
+            log.error(
+                "[thumb] VIDEO->JPG FAIL rc=%s CMD=%s STDERR=%s",
+                rc, shlex.join(cmd), err
             )
             return False
 
         if not os_tmp_path.exists():
-            print(f"[thumb] VIDEO->JPG MISSING: {out_jpg}", file=sys.stderr)
+            log.error("[thumb] VIDEO->JPG MISSING: %s", str(out_jpg))
             return False
 
         data = os_tmp_path.read_bytes()
         atomic_write_bytes(str(out_jpg), data)
-        print(f"[thumb] VIDEO->JPG OK: {out_jpg}")
+        log.info("[thumb] VIDEO->JPG OK: %s", str(out_jpg))
         return True
     finally:
         try:
@@ -283,7 +309,7 @@ def make_thumbnail_for_folder(
     """
     kind, src = _find_capture_candidate(folder)
     if not src:
-        print(f"[thumb] SKIP (no source): {folder.name}")
+        log.info("[thumb] SKIP (no source): %s", folder.name)
         return False, None
 
     out = folder / "thumbs" / f"{_safe_name(folder.name)}.jpg"
@@ -302,10 +328,10 @@ def make_thumbnail_for_folder(
                 im.convert("RGB").save(buf, "JPEG", quality=88, optimize=True)
                 atomic_write_bytes(str(out), buf.getvalue())
 
-            print(f"[thumb] OK (image): {out}")
+            log.info("[thumb] OK (image): %s", str(out))
             return True, "image"
         except Exception as e:
-            print(f"[thumb] image resize FAIL: {e}", file=sys.stderr)
+            log.error("[thumb] image resize FAIL: %s", str(e))
             return False, "image"
 
     if kind == "pdf":
@@ -319,7 +345,7 @@ def make_thumbnail_for_folder(
         return False, "video"
 
     # 이론상 도달하지 않음
-    print(f"[thumb] FAIL (unknown kind={kind}): {folder.name}", file=sys.stderr)
+    log.error("[thumb] FAIL (unknown kind=%s): %s", str(kind), folder.name)
     return False, kind
 
 
@@ -364,12 +390,9 @@ def scan_and_make_thumbs(
                 if thumb_file.exists():
                     try:
                         thumb_file.unlink()
-                        print(f"[thumb] removed orphan thumb (no source): {thumb_file}")
+                        log.info("[thumb] removed orphan thumb (no source): %s", str(thumb_file))
                     except Exception as e:
-                        print(
-                            f"[thumb] WARN: failed to remove orphan thumb {thumb_file}: {e}",
-                            file=sys.stderr,
-                        )
+                        log.warning("[thumb] WARN: failed to remove orphan thumb %s: %s", str(thumb_file), str(e))
                         any_error = True
                 continue
 
@@ -381,7 +404,7 @@ def scan_and_make_thumbs(
             ok, _src = make_thumbnail_for_folder(folder, max_width=width)
             # ok=False(변환 실패 등)는 전체 스캔 실패로 보지 않고 넘어감
         except Exception as e:
-            print(f"[thumb] ERROR in {folder.name}: {e}", file=sys.stderr)
+            log.error("[thumb] ERROR in %s: %s", folder.name, str(e))
             any_error = True
 
     return not any_error

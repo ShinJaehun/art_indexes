@@ -6,9 +6,12 @@ import os
 import hashlib
 import shutil
 import uuid
+import logging
 
 from backend.constants import PUBLISH_CSS, CSS_PREFIX
 from backend.fsutil import read_card_id, write_card_id
+
+log = logging.getLogger("suksukidx")
 
 TOOLBAR_HTML = """
 <div class="card-actions">
@@ -41,7 +44,7 @@ def run_sync_all(
         ok = scan_and_make_thumbs(resource_dir, refresh=False, width=thumb_width)
         return 0 if ok else 1
     except Exception as e:
-        print(f"❌ internal thumbnail scan failed: {e}")
+        log.error("[scan] internal thumbnail scan failed: %s", str(e))
         return 1
 
 
@@ -69,7 +72,7 @@ def ensure_card_ids(resource_dir: Path) -> dict[str, str]:
             key=lambda p: p.name,
         )
     except Exception as e:
-        print(f"[id] WARN: failed to list resource dir for ids: {e}")
+        log.warning("[id] failed to list resource dir for ids: %s", str(e))
         return {}
 
     for d in entries:
@@ -83,9 +86,9 @@ def ensure_card_ids(resource_dir: Path) -> dict[str, str]:
             cid = str(uuid.uuid4())
             try:
                 write_card_id(dir_str, cid)
-                print(f"[id] create {d.name} -> {cid}")
+                log.info("[id] create %s -> %s", d.name, cid)
             except Exception as e:
-                print(f"[id] WARN: failed to write id for {d.name}: {e}")
+                log.warning("[id] failed to write id for %s: %s", d.name, str(e))
                 continue
 
         # 중복 ID 해소: 이미 사용 중이면 새로 발급
@@ -93,13 +96,10 @@ def ensure_card_ids(resource_dir: Path) -> dict[str, str]:
             new_cid = str(uuid.uuid4())
             try:
                 write_card_id(dir_str, new_cid)
-                print(
-                    f"[id] duplicate detected for {d.name} (old:{cid}); "
-                    f"reassigned -> {new_cid}"
-                )
+                log.warning("[id] duplicate detected for %s (old:%s); reassigned -> %s", d.name, cid, new_cid)
                 cid = new_cid
             except Exception as e:
-                print(f"[id] WARN: failed to fix duplicate id for {d.name}: {e}")
+                log.warning("[id] failed to fix duplicate id for %s: %s", d.name, str(e))
                 continue
 
         used_ids[cid] = d.name
@@ -172,7 +172,7 @@ def scan_ssot(resource_dir: Path) -> Dict[str, Any]:
             key=lambda p: p.name,
         )
     except Exception as e:
-        print(f"❌ [SCAN] failed to list resource dir: {e}")
+        log.error("[SCAN] failed to list resource dir: %s", str(e))
         return {"folders": [], "stats": {"count": 0, "thumbs": 0, "errors": 1}}
 
     thumb_count = 0
@@ -199,10 +199,11 @@ def scan_ssot(resource_dir: Path) -> Dict[str, Any]:
                     "mtime": float(mtime),
                 }
             )
-            print(f"[SCAN] {slug} ✓ (thumb:{'Y' if has_thumb else 'N'})")
+            log.info("[SCAN] %s ✓ (thumb:%s)", slug, ("Y" if has_thumb else "N"))
+
         except Exception as e:
             errors += 1
-            print(f"[SCAN] {d.name} ⚠️  {e}")
+            log.warning("[SCAN] %s ⚠ %s", d.name, str(e))
 
     return {
         "folders": folders,
@@ -296,7 +297,7 @@ def ensure_css_assets(resource_dir: Path) -> str:
         master_css = _read_master_css(resource_dir)
         if master_css is None:
             # 여기까지 오면 진짜로 CSS 소스가 없는 상태
-            print("[css] publish.css/master.css not found; fallback to master.css (missing)")
+            log.error("[css] publish.css/master.css not found; fallback to master.css (missing)")
             return "master.css"
 
         basename = "master.css"
@@ -314,7 +315,7 @@ def ensure_css_assets(resource_dir: Path) -> str:
             target = d / basename
             _write_if_changed(target, master_css)
 
-        print(f"[css] deployed {basename} to root and folders (fallback)")
+        log.info("[css] deployed %s to root and folders (fallback)", basename)
         return basename
 
     h = _sha1_12(css)
@@ -335,7 +336,7 @@ def ensure_css_assets(resource_dir: Path) -> str:
         _write_if_changed(target, css)
         _cleanup_old_css(d, basename)
 
-    print(f"[css] deployed {basename} to root and folders")
+    log.info("[css] deployed %s to root and folders", basename)
     return basename
 
 

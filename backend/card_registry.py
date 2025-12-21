@@ -3,6 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 import json
+import logging
+
+log = logging.getLogger("suksukidx")
+
 from datetime import datetime
 
 try:
@@ -59,7 +63,7 @@ class CardRegistry:
                 data["items"] = []
             return data
         except Exception as exc:
-            print(f"[registry] load failed: {exc}")
+            log.warning("[registry] load failed: %s", str(exc))
             return self._empty()
 
     def save(self, data: Dict[str, Any]) -> None:
@@ -80,7 +84,7 @@ class CardRegistry:
             text = json.dumps(data, ensure_ascii=False, indent=2)
             atomic_write_text(str(path), text, encoding="utf-8")
         except Exception as exc:
-            print(f"[registry] save failed: {exc}")
+            log.error("[registry] save failed: %s", str(exc))
 
     def items(self) -> List[Dict[str, Any]]:
         data = self.load()
@@ -237,7 +241,7 @@ class CardRegistry:
         try:
             html = master_path.read_text(encoding="utf-8")
         except Exception as exc:
-            print(f"[registry] bootstrap: read master_content failed: {exc}")
+            log.error("[registry] bootstrap: read master_content failed: %s", str(exc))
             return self.load()
 
         if not html.strip():
@@ -246,7 +250,7 @@ class CardRegistry:
             return data
 
         if BeautifulSoup is None:
-            print("[registry] bootstrap: BeautifulSoup not available, skip")
+            log.error("[registry] bootstrap: BeautifulSoup not available")
             return self.load()
 
         soup = BeautifulSoup(html, "html.parser")
@@ -264,9 +268,7 @@ class CardRegistry:
             if not card_id:
                 title_el = card_div.find("h2")
                 title_txt = (title_el.get_text(strip=True) if title_el else "").strip()
-                print(
-                    f"[registry] bootstrap: skip card without id (title='{title_txt}')"
-                )
+                log.info("[registry] bootstrap: skip card without id (title=%s)", title_txt)
                 continue
 
             folder = (card_div.get("data-card") or "").strip()
@@ -304,5 +306,5 @@ class CardRegistry:
             "items": new_items,
         }
         self.save(data)
-        print(f"[registry] bootstrap: synced items={len(new_items)}")
+        log.info("[registry] bootstrap: synced items=%s", len(new_items))
         return data

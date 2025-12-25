@@ -1,0 +1,724 @@
+// ---- 메타 자동 저장(디바운스) --------------------------------------------
+window.queueMetaSave = function queueMetaSave() {
+    if (!window.hasBridge) return; // 브라우저 미리보기 모드에서는 생략
+    if (window._metaSaveTimer) clearTimeout(window._metaSaveTimer);
+    window._metaSaveTimer = setTimeout(async () => {
+        try {
+            // 메타만 바뀐 경우에도 전체 직렬화로 저장(간단/일관)
+            await window.call("save_master", window.serializeMaster());
+            window.showStatus({ level: "ok", title: "변경사항 저장", autoHideMs: 1200 });
+        } catch (e) {
+            console.error(e);
+            window.showStatus({ level: "error", title: "저장 실패", lines: [String(e?.message || e)] });
+        } finally {
+            window._metaSaveTimer = null;
+        }
+    }, 500);
+};
+
+window.enhanceBlocks = function enhanceBlocks() {
+    window.$$(".card").forEach(div => {
+        if (div.__enhanced) return;
+
+        function updateHiddenUI(div, btnToggleHidden) {
+            const isHidden = ((div.getAttribute("data-hidden") || "").trim().toLowerCase() === "true");
+            // 클래스(시각) 동기화
+            div.classList.toggle("is-hidden", isHidden);
+            // 버튼 라벨/상태 동기화
+            if (btnToggleHidden) {
+                btnToggleHidden.textContent = isHidden ? "숨김 해제" : "숨김";
+                btnToggleHidden.setAttribute("aria-pressed", String(isHidden));
+                btnToggleHidden.title = isHidden ? "숨김을 해제합니다" : "이 카드를 숨깁니다";
+
+                // 옵션: 숨김 중 편집/저장 비활성
+                const actions = div.querySelector(".card-actions");
+                actions?.querySelector(".btnEditOne") && (actions.querySelector(".btnEditOne").disabled = isHidden);
+                actions?.querySelector(".btnSaveOne") && (actions.querySelector(".btnSaveOne").disabled = isHidden);
+            }
+        }
+
+        // --- 초기 메타 표시: data-* → 클래스 반영 (재로드/Sync 후에도 시각 상태 유지)
+        (function applyMetaFromData(el) {
+            const hidden = (el.getAttribute("data-hidden") || "").trim().toLowerCase() === "true";
+            // hidden은 버튼이 만들어진 뒤에 라벨까지 맞춰줘야 하므로 여기서는 클래스만 예비 반영(옵션)
+            el.classList.toggle("is-hidden", hidden);
+        })(div);
+
+        // head: h2 → actions → thumb-wrap 순서 보정
+        function normalizeHead(headEl) {
+            const h2 = window.$("h2", headEl);
+            let actions = window.$(".card-actions", headEl);
+            let thumbWrap = window.$(".thumb-wrap", headEl);
+
+            if (!actions) {
+                actions = document.createElement("div");
+                actions.className = "card-actions" + (window.hasBridge ? "" : " hidden");
+                actions.innerHTML = `
+          <button class="btn btnEditOne">편집</button>
+          <button class="btn btnSaveOne" disabled>저장</button>
+          <button class="btn btnCancelOne" disabled>취소</button>
+          <button class="btn btnThumb">썸네일 갱신</button>
+          <button class="btn btnToggleHidden">숨김</button>
+          <button class="btn btnOpenFolder">폴더 열기</button>
+          <button class="btn btnToggleDelete">삭제</button>
+        `;
+            } else {
+                // P5-2: 기존 마크업에 취소 버튼이 없다면 추가(하위호환)
+                if (!actions.querySelector(".btnCancelOne")) {
+                    const cancelBtn = document.createElement("button");
+                    cancelBtn.className = "btn btnCancelOne";
+                    cancelBtn.textContent = "취소";
+                    cancelBtn.disabled = true;
+                    const saveBtn = actions.querySelector(".btnSaveOne");
+                    if (saveBtn && saveBtn.nextSibling) {
+                        saveBtn.insertAdjacentElement("afterend", cancelBtn);
+                    } else if (saveBtn) {
+                        actions.appendChild(cancelBtn);
+                    } else {
+                        // 이론상 없겠지만, 그래도 actions 안 첫 번째에 넣어둠
+                        actions.insertBefore(cancelBtn, actions.firstChild);
+                    }
+                }
+
+                // P5: 기존 마크업에 폴더 버튼이 없다면 추가
+                if (!actions.querySelector(".btnOpenFolder")) {
+                    const folderBtn = document.createElement("button");
+                    folderBtn.className = "btn btnOpenFolder";
+                    folderBtn.textContent = "폴더 열기";
+                    actions.appendChild(folderBtn);
+                }
+            }
+
+            if (h2) headEl.appendChild(h2);
+
+            // 기존 메타 라벨 제거 후, data-created-at 기반 생성일 표시
+            headEl.querySelectorAll(".card-meta").forEach(el => el.remove());
+            const cardEl = headEl.closest(".card");
+            const createdRaw = (cardEl?.getAttribute("data-created-at") || "").trim();
+            if (createdRaw) {
+                const metaSpan = document.createElement("span");
+                metaSpan.className = "card-meta";
+                // YYYY-MM-DD까지만 표시
+                metaSpan.textContent = createdRaw.slice(0, 10);
+                if (h2 && h2.parentNode === headEl) {
+                    h2.insertAdjacentElement("afterend", metaSpan);
+                } else {
+                    headEl.appendChild(metaSpan);
+                }
+            }
+
+            headEl.appendChild(actions);
+
+            if (thumbWrap) headEl.appendChild(thumbWrap);
+            return { actions, thumbWrap };
+        }
+
+        // .card-head 구성 없으면 생성
+        const hasHead = !!div.querySelector(".card-head");
+        if (!hasHead) {
+            const h2 = window.$("h2", div);
+            if (!h2) return;
+
+            const head = document.createElement("div");
+            head.className = "card-head";
+            h2.replaceWith(head);
+            head.appendChild(h2);
+            let { thumbWrap } = normalizeHead(head);
+
+            // head 다음 형제 중 썸네일 후보를 thumb-wrap으로 이동
+            let sibling = head.nextSibling;
+            while (sibling) {
+                const nextSibling = sibling.nextSibling;
+                if (
+                    sibling.nodeType === 1 && sibling.matches &&
+                    (sibling.matches("img.thumb, img[alt='썸네일']") ||
+                        (sibling.tagName === "IMG" && /\/thumbs\//.test(sibling.getAttribute("src") || "")))
+                ) {
+                    if (!thumbWrap) {
+                        thumbWrap = document.createElement("div");
+                        thumbWrap.className = "thumb-wrap";
+                        head.appendChild(thumbWrap);
+                    }
+                    thumbWrap.appendChild(sibling);
+                }
+                sibling = nextSibling;
+            }
+
+            // .inner 생성 및 나머지 내용을 .inner로 이동
+            let innerEl = window.$(".inner", div);
+            if (!innerEl) {
+                innerEl = document.createElement("div");
+                innerEl.className = "inner";
+                const leftovers = [];
+                let moveNode = head.nextSibling;
+                while (moveNode) { leftovers.push(moveNode); moveNode = moveNode.nextSibling; }
+                leftovers.forEach(nd => innerEl.appendChild(nd));
+                div.appendChild(innerEl);
+            }
+
+            // .inner 안으로 들어간 썸네일이 있다면 다시 head로
+            const stray = window.$(".inner img.thumb, .inner img[alt='썸네일'], .inner img[src*='/thumbs/']", div);
+            if (stray) {
+                let tw = window.$(".thumb-wrap", head);
+                if (!tw) {
+                    tw = document.createElement("div");
+                    tw.className = "thumb-wrap";
+                    head.appendChild(tw);
+                }
+                tw.appendChild(stray);
+            }
+
+        } else {
+            const head = window.$(".card-head", div);
+            normalizeHead(head);
+        }
+
+        // 제목/썸네일은 편집 제외
+        const title = window.$(".card-head h2", div);
+        let thumbWrap = window.$(".thumb-wrap", div);
+        title?.setAttribute("contenteditable", "false");
+        title?.setAttribute("draggable", "false");
+        thumbWrap?.setAttribute("contenteditable", "false");
+        thumbWrap?.setAttribute("draggable", "false");
+        thumbWrap?.querySelectorAll("*").forEach(el => {
+            el.setAttribute("contenteditable", "false");
+            el.setAttribute("draggable", "false");
+        });
+
+        // --- 썸네일 img 경로 표준화 ---
+        //   - 원본 HTML에 들어 있는 src를 최대한 그대로 신뢰한다.
+        //   - data-thumb-src 에는 "자연속재료로 표현하기/thumbs/자연속재료로_표현하기.jpg" 같은
+        //     상대 경로만 저장하고, 표시용 src는 "../../resource/..." 로만 바꾼다.
+        if (thumbWrap) {
+            const img = thumbWrap.querySelector("img");
+            if (img) {
+
+                // ✅ 백엔드가 인라인(data:)로 내려준 썸네일이면 그대로 유지
+                // (여기서 ../../resource/... 로 바꾸면 다시 안 보일 수 있음)
+                const currentSrc = img.getAttribute("src") || "";
+                if (window.isDataImageUrl(currentSrc)) {
+                    // data-thumb-src가 없으면 최소한 folder 기반으로만 채워둔다(저장용)
+                    if (!img.getAttribute("data-thumb-src")) {
+                        const folderName = div.getAttribute("data-card") || (title?.textContent || "").trim();
+                        if (folderName) img.setAttribute("data-thumb-src", `${folderName}/thumbs/${window.safeThumbName(folderName)}.jpg`);
+                    }
+                } else {
+
+                    let storedSrc = img.getAttribute("data-thumb-src");
+
+                    if (!storedSrc) {
+                        // 1) 현재 src에서 ../../resource/ 프리픽스, 쿼리스트링 제거
+                        let raw = img.getAttribute("src") || "";
+                        // 쿼리 파라미터 제거
+                        raw = raw.split("?")[0];
+
+                        // ../../resource/ 또는 ./resource/ 또는 resource/ 같은 앞부분 제거
+                        raw = raw
+                            .replace(/^(\.\.\/)+resource\//, "")
+                            .replace(/^\.\/?resource\//, "")
+                            .replace(/^resource\//, "");
+
+                        // "…/thumbs/…jpg" 꼴이면 그대로 사용
+                        if (/\/thumbs\/[^\/]+\.(jpe?g|png|webp)$/i.test(raw)) {
+                            storedSrc = raw;
+                        }
+                    }
+
+                    // 2) 그래도 못 찾았을 때만 최후의 수단으로 folderName 기반 추정
+                    if (!storedSrc) {
+                        const folderName = div.getAttribute("data-card") || (title?.textContent || "").trim();
+                        if (folderName) {
+                            // ★ 여기서는 예전 동작과의 하위호환용 "추정값"일 뿐,
+                            //    실제로는 대부분 위의 raw 경로에서 이미 구해질 것이다.
+                            storedSrc = `${folderName}/thumbs/${window.safeThumbName(folderName)}.jpg`;
+                        }
+                    }
+
+                    if (storedSrc) {
+                        img.setAttribute("data-thumb-src", storedSrc);
+                        // 브리지 여부와 관계없이 항상 resource 기준 경로로 교정
+                        img.src = `../../resource/${storedSrc}`;
+                    }
+                }
+            }
+        }
+
+        // 버튼/inner 참조
+        const actions = window.$(".card-head .card-actions", div);
+        const inner = window.$(".inner", div);
+
+        // URL 오토링크 + 버튼화(초기 표시 시 1회)
+        window.autoLinkify(inner);
+        window.decorateExternalLinks(inner);
+
+        const folder = div.getAttribute("data-card") || (title?.textContent || "").trim();
+        const btnEditOne = window.$(".btnEditOne", actions);
+        const btnSaveOne = window.$(".btnSaveOne", actions);
+        const btnCancelOne = window.$(".btnCancelOne", actions);
+        const btnThumb = window.$(".btnThumb", actions);
+
+        const btnToggleHidden = window.$(".btnToggleHidden", actions);
+        const btnDelete = window.$(".btnToggleDelete", actions);
+        const btnOpenFolder = window.$(".btnOpenFolder", actions);
+
+        // --- 카드별 폴더 열기 ---
+        if (btnOpenFolder) {
+            btnOpenFolder.onclick = async () => {
+                if (!folder) {
+                    alert("이 카드에 연결된 폴더 이름을 찾을 수 없습니다.");
+                    return;
+                }
+                if (!window.hasBridge) {
+                    alert("폴더 열기는 데스크톱 앱에서만 가능합니다.");
+                    return;
+                }
+                try {
+                    const res = await window.call("open_folder", folder);
+                    if (!res?.ok) {
+                        const msg = res?.error || "폴더를 열 수 없습니다.";
+                        window.showStatus({
+                            level: "error",
+                            title: "폴더 열기 실패",
+                            lines: [msg],
+                        });
+                    } else {
+                        // 성공 시에는 굳이 상태바에 안 띄워도 되고,
+                        // 필요하면 아래처럼 한 줄 정도만:
+                        window.showStatus({
+                            level: "ok",
+                            title: "폴더 열림",
+                            lines: [res.path || folder],
+                            autoHideMs: 2000,
+                        });
+                    }
+                } catch (e) {
+                    window.showStatus({
+                        level: "error",
+                        title: "폴더 열기 예외",
+                        lines: [String(e?.message || e)],
+                    });
+                }
+            };
+        }
+
+        // --- P3-2: 숨김 토글 ---
+        if (btnToggleHidden) {
+
+            updateHiddenUI(div, btnToggleHidden);
+
+            btnToggleHidden.onclick = () => {
+                const curr = (div.getAttribute("data-hidden") || "").trim().toLowerCase() === "true";
+                const next = !curr;
+                div.setAttribute("data-hidden", String(next));
+                updateHiddenUI(div, btnToggleHidden); // 라벨/클래스 같이 갱신
+                window.queueMetaSave();               // 저장(→ master_content에 반영됨)
+            };
+        }
+
+        if (btnDelete) {
+            btnDelete.textContent = "삭제";
+            btnDelete.onclick = async () => {
+                if (!window.hasBridge) return alert("삭제는 데스크톱 앱에서만 가능합니다.");
+
+                const cardId = div.getAttribute("data-card-id");
+                const cardTitle = (div.getAttribute("data-card") || title?.textContent || "").trim();
+
+                if (!cardId) {
+                    return alert("card_id가 없어 삭제할 수 없습니다(동기화 후 다시 시도).");
+                }
+
+                const ok = confirm(
+                    `정말 삭제할까요?\n\n- 제목: ${cardTitle}\n- ID: ${cardId}\n\n폴더 및 자료가 영구 삭제됩니다.`
+                );
+                if (!ok) return;
+
+                try {
+                    window.showStatus({ level: "warn", title: "삭제 중…", lines: [cardTitle] });
+
+                    const r = await window.call("delete_card_by_id", cardId);
+                    if (!r?.ok) {
+                        const errs = [];
+                        if (Array.isArray(r?.errors) && r.errors.length) {
+                            errs.push(...r.errors);
+                        } else if (r?.error) {
+                            errs.push(r.error);
+                        } else {
+                            errs.push(`삭제 실패(card_id=${cardId})`);
+                        }
+                        window.showStatus({
+                            level: "error",
+                            title: "삭제 실패",
+                            errors: errs,
+                        });
+                        return;
+                    }
+
+                    window.showStatus({
+                        level: "ok",
+                        title: "삭제 완료",
+                        lines: [cardTitle],
+                        autoHideMs: 4000,
+                    });
+
+                    await window.loadMaster();
+                } catch (exc) {
+                    console.error(exc);
+                    window.showStatus({
+                        level: "error",
+                        title: "삭제 예외",
+                        errors: [String(exc?.message || exc)],
+                    });
+                }
+            };
+        }
+
+        // --- 붙여넣기 핸들러 (중복 제거, escape 유틸 사용) ---
+        if (inner && !inner.__pasteWired) {
+            inner.addEventListener("paste", (evt) => {
+                try {
+                    if (!evt.clipboardData) return;
+
+                    // Shift/Alt 누르면 "문자 그대로 붙여넣기" 모드
+                    const forceLiteral = window.__pasteMods.shift || window.__pasteMods.alt;
+
+                    // 1) HTML 클립보드가 있고 literal이 아니면 → 그대로 삽입
+                    const html = evt.clipboardData.getData("text/html");
+                    if (html && !forceLiteral) {
+                        evt.preventDefault();
+                        document.execCommand("insertHTML", false, html);
+                        return;
+                    }
+
+                    // 2) 평문 처리
+                    const raw = evt.clipboardData.getData("text/plain");
+                    if (!raw) return;
+
+                    const hasLiteralTags = /<[^>]+>/.test(raw);      // <h2>...</h2>
+                    const hasEscapedTags = /&lt;[^&]+&gt;/.test(raw);// &lt;h2&gt;...&lt;/h2&gt;
+                    const hasCodeFence = /(^|\n)```/.test(raw);      // 코드펜스
+
+                    // 2-A) 문자 그대로 붙여넣기(코드펜스 or 강제 literal)
+                    if (forceLiteral || hasCodeFence) {
+                        evt.preventDefault();
+                        const stripped = raw.replace(/(^|\n)```([\s\S]*?)```/g, (_, pre, body) => pre + body);
+                        const literal = window.escapeHTML(stripped);
+                        document.execCommand("insertHTML", false, `<pre><code>${literal}</code></pre>`);
+                        return;
+                    }
+
+                    // 2-B) 태그형 텍스트를 실제 HTML로 삽입 (보안 필터 포함)
+                    if (hasLiteralTags || hasEscapedTags) {
+                        evt.preventDefault();
+
+                        // &lt;…&gt; → 언이스케이프
+                        let decoded = raw;
+                        if (hasEscapedTags) {
+                            const ta = document.createElement("textarea");
+                            ta.innerHTML = raw;
+                            decoded = ta.value;
+                        }
+
+                        // 브라우저 파서로 DOM 구성
+                        const divTmp = document.createElement("div");
+                        divTmp.innerHTML = decoded;
+
+                        // 간이 sanitizer: 허용/금지 + 속성 필터
+                        const allowed = new Set(["P", "BR", "IMG", "A", "UL", "OL", "LI", "H1", "H2", "H3", "H4", "STRONG", "EM", "SPAN", "DIV", "FIGURE", "FIGCAPTION"]);
+                        const danger = new Set(["SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "LINK", "FORM", "INPUT", "BUTTON", "VIDEO", "AUDIO"]);
+
+                        divTmp.querySelectorAll(Array.from(danger).join(",")).forEach(n => n.remove());
+                        divTmp.querySelectorAll("*").forEach(el => {
+                            [...el.attributes].forEach(attr => {
+                                const key = attr.name.toLowerCase();
+                                const val = (attr.value || "").trim().toLowerCase();
+                                if (key.startsWith("on") || key === "style" || key === "contenteditable" || key === "draggable" || key.startsWith("data-")) {
+                                    el.removeAttribute(attr.name);
+                                }
+                                if ((key === "href" || key === "src") && (val.startsWith("javascript:") || val.startsWith("data:"))) {
+                                    el.removeAttribute(attr.name);
+                                }
+                            });
+                            if (!allowed.has(el.tagName)) {
+                                const parent = el.parentNode;
+                                while (el.firstChild) parent.insertBefore(el.firstChild, el);
+                                parent.removeChild(el);
+                            }
+                        });
+
+                        // === 구조 보정: 헤딩 강등 + 고아 li 래핑 + 빈 태그 정리 ===
+                        (function demoteHeadings(root) {
+                            root.querySelectorAll("h1,h2").forEach(h => {
+                                const h3 = document.createElement("h3");
+                                h3.innerHTML = h.innerHTML;
+                                [...h.attributes].forEach(a => h3.setAttribute(a.name, a.value));
+                                h.replaceWith(h3);
+                            });
+                        })(divTmp);
+
+                        (function normalizeOrphanLis(root) {
+                            const orphanLis = Array.from(root.querySelectorAll("li")).filter(li => {
+                                const p = li.parentElement;
+                                return !(p && (p.tagName === "UL" || p.tagName === "OL"));
+                            });
+                            if (!orphanLis.length) return;
+
+                            let run = [];
+                            const flush = () => {
+                                if (!run.length) return;
+                                const ul = document.createElement("ul");
+                                run[0].parentNode.insertBefore(ul, run[0]);
+                                run.forEach(li => ul.appendChild(li));
+                                run = [];
+                            };
+
+                            const tree = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, null);
+                            let cursor;
+                            while ((cursor = tree.nextNode())) {
+                                if (cursor.tagName === "LI" && orphanLis.includes(cursor)) {
+                                    run.push(cursor);
+                                } else if (run.length) {
+                                    flush();
+                                }
+                            }
+                            flush();
+                        })(divTmp);
+
+                        (function pruneEmpty(root) {
+                            root.querySelectorAll("p,div,span,figure,figcaption").forEach(el => {
+                                const html = (el.innerHTML || "").trim();
+                                if (!html || html === "<br>") {
+                                    el.remove();
+                                }
+                            });
+                        })(divTmp);
+
+                        document.execCommand("insertHTML", false, divTmp.innerHTML);
+                        return;
+                    }
+                    // 2-C) 그 외 평문은 기본 동작
+                } catch (pasteErr) {
+                    console.warn("paste handler error", pasteErr);
+                }
+            });
+            inner.__pasteWired = true;
+        }
+
+        // 기본 상태
+        inner.contentEditable = "false";
+        inner.classList.remove("editable");
+        btnEditOne.disabled = false;
+        btnSaveOne.disabled = true;
+        if (btnCancelOne) btnCancelOne.disabled = true;
+
+        // 편집 시작 (개별 카드)
+        btnEditOne.onclick = () => {
+            if (!window.hasBridge) return alert("편집은 데스크톱 앱에서만 가능합니다.");
+
+            // P5-2: 현재 내용을 스냅샷으로 보관 (DOM 프로퍼티, data-* 아님)
+            inner.__snapshotHtml = inner.innerHTML;
+
+            inner.contentEditable = "true";
+            inner.classList.add("editable");
+            btnEditOne.disabled = true;
+            btnSaveOne.disabled = false;
+            if (btnCancelOne) btnCancelOne.disabled = false;
+        };
+
+        // P5-2: 편집 취소 (개별 카드)
+        if (btnCancelOne) {
+            btnCancelOne.onclick = () => {
+                if (!inner.__snapshotHtml) return; // 스냅샷 없으면 취소 무시
+
+                inner.innerHTML = inner.__snapshotHtml;
+                delete inner.__snapshotHtml;
+
+                inner.contentEditable = "false";
+                inner.classList.remove("editable");
+                btnEditOne.disabled = false;
+                btnSaveOne.disabled = true;
+                btnCancelOne.disabled = true;
+            };
+        }
+
+        // 저장
+        btnSaveOne.onclick = async () => {
+            if (!window.hasBridge) return;
+            btnSaveOne.disabled = true;
+            try {
+                // ✅ 저장 직전 전체 카드에 대해 오토링크/버튼화 보정
+                window.$$(".card .inner").forEach(el => { window.autoLinkify(el); window.decorateExternalLinks(el); });
+
+                await window.call("save_master", window.serializeMaster());
+                await window.loadMaster(); // 저장된 내용으로 즉시 재로딩(렌더 상태 확인)
+                window.showStatus({ level: "ok", title: "저장 완료", autoHideMs: 1800 });
+                inner.contentEditable = "false";
+                inner.classList.remove("editable");
+                btnEditOne.disabled = false;
+                btnSaveOne.disabled = true;
+
+                // 저장 성공 시 스냅샷 폐기 + 취소 버튼 비활성화
+                if (btnCancelOne) {
+                    btnCancelOne.disabled = true;
+                }
+                delete inner.__snapshotHtml;
+
+            } catch (exc) {
+                console.error(exc);
+                window.showStatus({ level: "error", title: "저장 실패", lines: [String(exc?.message || exc)] });
+                btnSaveOne.disabled = false;
+            }
+        };
+
+        // 썸네일 갱신 (P5-썸네일 v2: 타입 순환 + 즉시 썸네일 리로드)
+        btnThumb.onclick = async () => {
+            if (!window.hasBridge) return alert("데스크톱 앱에서만 가능합니다.");
+            btnThumb.disabled = true;
+            window.showStatus({ level: "warn", title: "썸네일 갱신 중…", lines: [`${folder}`] });
+            try {
+                const result = await window.call("refresh_thumb", folder, 640);
+
+                // 공통 헬퍼: DOM에서 썸네일 완전히 제거
+                const removeThumbDom = () => {
+                    if (thumbWrap) {
+                        thumbWrap.remove();
+                        thumbWrap = null;
+                    }
+                };
+
+                if (result?.ok) {
+                    const srcRaw = result.source ?? null;
+                    const src = typeof srcRaw === "string" ? srcRaw.toLowerCase() : null;
+
+                    // ✅ 소스가 없다고 응답한 경우 (예: source:null) → 썸네일 제거 모드
+                    if (!src) {
+                        removeThumbDom();
+
+                        // DOM에서 썸네일 제거한 상태를 master_content/master_index에 저장
+                        window.queueMetaSave();
+
+                        window.showStatus({
+                            level: "ok",
+                            title: "썸네일 제거 완료",
+                            lines: [folder],
+                            autoHideMs: 1800,
+                        });
+                        return;
+                    }
+
+                    // ✅ 정상 생성 케이스: 백엔드가 알려주는 사용 소스 타입(image/pdf/video)을 상태바에 표시
+                    const srcLabel =
+                        src === "image" ? "이미지" :
+                            src === "pdf" ? "PDF" :
+                                src === "video" ? "동영상" :
+                                    null;
+
+                    const lines = [folder];
+                    if (srcLabel) {
+                        lines.push(`사용 소스: ${srcLabel}`);
+                    }
+
+                    // ✅ 썸네일 DOM이 없던 카드라면 새로 생성
+                    if (!thumbWrap) {
+                        const head = window.$(".card-head", div);
+                        if (head) {
+                            thumbWrap = document.createElement("div");
+                            thumbWrap.className = "thumb-wrap";
+                            const imgEl = document.createElement("img");
+                            imgEl.className = "thumb";
+                            imgEl.alt = "썸네일";
+                            thumbWrap.appendChild(imgEl);
+                            head.appendChild(thumbWrap);
+                        }
+                    }
+
+                    // ✅ img 엘리먼트 확보(없으면 새로 만듦)
+                    let img = thumbWrap && thumbWrap.querySelector("img");
+                    if (!img && thumbWrap) {
+                        img = document.createElement("img");
+                        img.className = "thumb";
+                        img.alt = "썸네일";
+                        thumbWrap.appendChild(img);
+                    }
+
+                    if (img) {
+                        // ✅ refresh_thumb 직후에는 로컬 파일 경로로 강제 교정하지 않는다.
+                        //    (file:// 제한 환경에서 다시 안 보일 수 있음)
+                        //    대신 loadMaster()로 재로드해서 백엔드가 인라인(data:)로 내려준 썸네일을 받는다.
+                        img.setAttribute("data-thumb-src", `${folder}/thumbs/${window.safeThumbName(folder)}.jpg`);
+                    }
+
+                    // ✅ 썸네일 변경 내용을 바로 master_content/master_index에 반영
+                    //   (소스가 없는 경우 썸네일 DOM 제거까지 포함한 상태로 저장)
+                    window.queueMetaSave();
+
+                    // ✅ 인라인 썸네일을 다시 받기 위해 재로드
+                    await window.loadMaster({ retryThumbs: false, attempt: 0 });
+
+                    window.showStatus({
+                        level: "ok",
+                        title: "썸네일 갱신 완료",
+                        lines,
+                        autoHideMs: 1800,
+                    });
+                } else {
+                    const msg = result?.error || "";
+
+                    // 이전 버전 호환용 (예전 서버가 "소스 이미지 없음" 문구를 줄 수도 있으니)
+                    const isNoSource =
+                        /소스 이미지 없음/.test(msg) ||
+                        /no source/i.test(msg);
+
+                    if (isNoSource) {
+                        removeThumbDom();
+                        window.queueMetaSave();
+                        window.showStatus({
+                            level: "ok",
+                            title: "썸네일 제거 완료",
+                            lines: [folder],
+                            autoHideMs: 1800,
+                        });
+                        return;
+                    }
+
+                    // 🔹 새 디버그 정보: source_type + tool
+                    const kindRaw = (result?.source_type || result?.source || "").toLowerCase();
+                    let srcLabel = null;
+                    if (kindRaw === "image") srcLabel = "이미지";
+                    else if (kindRaw === "pdf") srcLabel = "PDF";
+                    else if (kindRaw === "video") srcLabel = "동영상";
+
+                    const tool = result?.tool || null;
+
+                    const lines = [folder];
+                    if (srcLabel) {
+                        lines.push(`시도한 소스: ${srcLabel}`);
+                    }
+                    if (tool === "ffmpeg") {
+                        lines.push("필요 도구: ffmpeg (동영상 썸네일)");
+                    } else if (tool === "poppler") {
+                        lines.push("필요 도구: poppler (pdftoppm / pdfinfo, PDF 썸네일)");
+                    }
+
+                    const hint = msg ? [msg] : ["소스 이미지 없음 또는 변환 실패"];
+                    window.showStatus({
+                        level: "error",
+                        title: "썸네일 갱신 실패",
+                        lines,
+                        errors: hint,
+                    });
+                }
+            } catch (exc) {
+                window.showStatus({
+                    level: "error",
+                    title: "썸네일 갱신 예외",
+                    lines: [folder],
+                    errors: [String(exc?.message || exc)],
+                });
+            } finally {
+                btnThumb.disabled = false;
+            }
+        };
+
+        div.__enhanced = true;
+    });
+};

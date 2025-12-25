@@ -38,25 +38,25 @@ function wireExtraToolbar() {
   if (_toolbarWired) return;
   _toolbarWired = true;
 
-  const btnRebuild = $("#btnRebuild");
-  const btnRegenAll = $("#btnRegenAll");
+  const btnRebuild = window.$("#btnRebuild");
+  const btnRegenAll = window.$("#btnRegenAll");
 
   // 선택적: 전역 편집/저장 버튼이 있는 경우 동일한 UX 적용
-  const btnEditAll = $("#btnEdit");     // 존재하면 전역 편집 시작
-  const btnSaveAll = $("#btnSaveAll");  // 존재하면 전역 저장
-  const btnResetAll = $("#btnResetAll"); // ⚠ 전체 초기화 (global toolbar)
+  const btnEditAll = window.$("#btnEdit");     // 존재하면 전역 편집 시작
+  const btnSaveAll = window.$("#btnSaveAll");  // 존재하면 전역 저장
+  const btnResetAll = window.$("#btnResetAll"); // ⚠ 전체 초기화 (global toolbar)
 
-  const sortField = $("#sortField");
-  const btnSortAsc = $("#btnSortAsc");
-  const btnSortDesc = $("#btnSortDesc");
+  const sortField = window.$("#sortField");
+  const btnSortAsc = window.$("#btnSortAsc");
+  const btnSortDesc = window.$("#btnSortDesc");
 
   if (btnRebuild) {
     btnRebuild.addEventListener("click", async () => {
-      if (!hasBridge) return alert("데스크톱 앱에서 실행하세요.");
+      if (!window.hasBridge) return alert("데스크톱 앱에서 실행하세요.");
       btnRebuild.disabled = true;
       try {
-        await call("rebuild_master");
-        await loadMaster();
+        await window.call("rebuild_master");
+        await window.loadMaster();
         alert("마스터 재생성 완료");
       } catch (e) {
         console.error(e); alert("실패");
@@ -68,12 +68,12 @@ function wireExtraToolbar() {
 
   if (btnRegenAll) {
     btnRegenAll.addEventListener("click", async () => {
-      if (!hasBridge) return alert("데스크톱 앱에서 실행하세요.");
+      if (!window.hasBridge) return alert("데스크톱 앱에서 실행하세요.");
       btnRegenAll.disabled = true;
       try {
-        const names = $$(".card").map(div => div.getAttribute("data-card") || $("h2", div)?.textContent.trim());
+        const names = window.$$(".card").map(div => div.getAttribute("data-card") || window.$("h2", div)?.textContent.trim());
         for (const name of names) {
-          await call("refresh_thumb", name, 640);
+          await window.call("refresh_thumb", name, 640);
         }
         alert("썸네일 일괄 갱신 완료");
       } catch (e) {
@@ -88,8 +88,8 @@ function wireExtraToolbar() {
   // ⚠ 전체 초기화 (reset_all 호출)
   if (btnResetAll) {
     btnResetAll.addEventListener("click", async () => {
-      if (!hasBridge) {
-        showStatus({
+      if (!window.hasBridge) {
+        window.showStatus({
           level: "warn",
           title: "데스크톱 앱에서만 초기화할 수 있습니다.",
         });
@@ -108,17 +108,17 @@ function wireExtraToolbar() {
       if (!ok) return;
 
       try {
-        showStatus({
+        window.showStatus({
           level: "warn",
           title: "전체 초기화 중…",
         });
 
-        const r = await call("reset_all");
+        const r = await window.call("reset_all");
         if (!r?.ok) {
           const msg =
             (r && (r.error || (Array.isArray(r.errors) && r.errors[0]))) ||
             "초기화에 실패했습니다.";
-          showStatus({
+          window.showStatus({
             level: "error",
             title: "전체 초기화 실패",
             lines: [msg],
@@ -134,16 +134,16 @@ function wireExtraToolbar() {
         summaryLines.push(`thumbs 폴더 ${r.thumb_dirs || 0}곳`);
         summaryLines.push(`child index ${r.child_indexes || 0}개`);
 
-        showStatus({
+        window.showStatus({
           level: "ok",
           title: "전체 초기화 완료",
           lines: summaryLines,
         });
 
         // 비워진 상태로 다시 로드
-        await loadMaster();
+        await window.loadMaster();
       } catch (e) {
-        showStatus({
+        window.showStatus({
           level: "error",
           title: "전체 초기화 예외",
           lines: [String(e?.message || e)],
@@ -155,9 +155,10 @@ function wireExtraToolbar() {
   // ---- P5: 프룬/고아 썸네일 정리 UI 숨기기 ------------------------------
   // HTML에는 예전 버튼이 남아 있을 수 있으므로, 로딩 시점에 통째로 제거한다.
   (function hidePruneControls() {
-    const btnPruneDryRun = $("#btnPruneDryRun");
-    const btnPruneApply = $("#btnPruneApply");
-    const chkPruneDeleteThumbs = $("#chkPruneDeleteThumbs");
+
+    const btnPruneDryRun = window.$("#btnPruneDryRun");
+    const btnPruneApply = window.$("#btnPruneApply");
+    const chkPruneDeleteThumbs = window.$("#chkPruneDeleteThumbs");
 
     if (btnPruneDryRun) btnPruneDryRun.remove();
     if (btnPruneApply) btnPruneApply.remove();
@@ -177,9 +178,9 @@ function wireExtraToolbar() {
     btnSaveAll.disabled = true;
 
     btnEditAll.addEventListener("click", () => {
-      if (!hasBridge) return alert("편집은 데스크톱 앱에서만 가능합니다.");
+      if (!window.hasBridge) return alert("편집은 데스크톱 앱에서만 가능합니다.");
       // 모든 카드의 .inner 편집 시작
-      $$(".card .inner").forEach(inner => {
+      window.$$(".card .inner").forEach(inner => {
         inner.contentEditable = "true";
         inner.classList.add("editable");
       });
@@ -188,17 +189,17 @@ function wireExtraToolbar() {
     });
 
     btnSaveAll.addEventListener("click", async () => {
-      if (!hasBridge) return;
+      if (!window.hasBridge) return;
       btnSaveAll.disabled = true;
       try {
         // 저장 직전 보정
-        $$(".card .inner").forEach(el => { autoLinkify(el); decorateExternalLinks(el); });
+        window.$$(".card .inner").forEach(el => { window.autoLinkify(el); window.decorateExternalLinks(el); });
 
-        await call("save_master", serializeMaster());
-        await loadMaster(); // 저장된 내용으로 즉시 재로딩(렌더 상태 확인)
-        showStatus({ level: "ok", title: "전체 저장 완료", autoHideMs: 2000 });
+        await window.call("save_master", window.serializeMaster());
+        await window.loadMaster(); // 저장된 내용으로 즉시 재로딩(렌더 상태 확인)
+        window.showStatus({ level: "ok", title: "전체 저장 완료", autoHideMs: 2000 });
         // 편집 종료
-        $$(".card .inner").forEach(inner => {
+        window.$$(".card .inner").forEach(inner => {
           inner.contentEditable = "false";
           inner.classList.remove("editable");
         });
@@ -206,7 +207,7 @@ function wireExtraToolbar() {
         btnSaveAll.disabled = true;
       } catch (e) {
         console.error(e);
-        showStatus({ level: "error", title: "저장 실패", lines: [String(e?.message || e)] });
+        window.showStatus({ level: "error", title: "저장 실패", lines: [String(e?.message || e)] });
         btnSaveAll.disabled = false;
       }
     });
@@ -217,8 +218,8 @@ function wireExtraToolbar() {
     if (!sortField) return;
     const field = sortField.value || "created";
 
-    const container = $("#content") || document.body;
-    const cards = $$(".card", container);
+    const container = window.$("#content") || document.body;
+    const cards = window.$$(".card", container);
     if (!cards.length) return;
 
     // --- 다중 키 정렬키 생성 ---
@@ -266,10 +267,10 @@ function wireExtraToolbar() {
     cards.forEach((el) => container.appendChild(el));
 
     // 브라우저 미리보기 모드: 화면 정렬만
-    if (!hasBridge) {
-      if (typeof showStatus === "function") {
+    if (!window.hasBridge) {
+      if (typeof window.showStatus === "function") {
         const label = field === "title" ? "이름" : "생성";
-        showStatus({
+        window.showStatus({
           level: "ok",
           title: `정렬 완료 (${label} ${direction === "asc" ? "↑" : "↓"})`,
         });
@@ -280,23 +281,23 @@ function wireExtraToolbar() {
     // 데스크톱 앱: 정렬 상태를 master_content + master_index에 즉시 반영
     try {
       const label = field === "title" ? "이름" : "생성";
-      showStatus &&
-        showStatus({
+      window.showStatus &&
+        window.showStatus({
           level: "warn",
           title: `정렬 후 저장 중… (${label} ${direction === "asc" ? "↑" : "↓"})`,
         });
-      await call("save_master", serializeMaster());
-      await loadMaster();
-      showStatus &&
-        showStatus({
+      await window.call("save_master", window.serializeMaster());
+      await window.loadMaster();
+      window.showStatus &&
+        window.showStatus({
           level: "ok",
           title: `정렬 + 저장 완료 (${label} ${direction === "asc" ? "↑" : "↓"})`,
           autoHideMs: 2500,
         });
     } catch (e) {
       console.error(e);
-      showStatus &&
-        showStatus({
+      window.showStatus &&
+        window.showStatus({
           level: "error",
           title: "정렬/저장 실패",
           lines: [String(e?.message || e)],

@@ -4,6 +4,23 @@ aimport = __import__
 import os
 from pathlib import Path
 
+def collect_tree(src_dir: Path, dest_prefix: str):
+    """
+    Recursively collect files under src_dir as PyInstaller datas entries.
+    Returns: List[Tuple[str, str]] where each tuple is (source_file, dest_dir).
+    - Keeps directory structure under dest_prefix.
+    """
+    src_dir = Path(src_dir)
+    out = []
+    if not src_dir.exists():
+        return out
+    for p in src_dir.rglob("*"):
+        if p.is_file():
+            rel_parent = p.parent.relative_to(src_dir)  # e.g. "subdir"
+            dest_dir = str(Path(dest_prefix) / rel_parent).replace("\\", "/")
+            out.append((str(p), dest_dir))
+    return out
+
 ROOT = Path(SPECPATH).resolve()
 UI = ROOT / "backend" / "ui"
 BIN = ROOT / "backend" / "bin"
@@ -15,10 +32,10 @@ os.chdir(str(ROOT))
 a_datas = [
     (str(UI / "index.html"),    "backend/ui"),
     (str(UI / "master.js"),     "backend/ui"),
-    (str(UI / "toolbar.js"),    "backend/ui"),
     (str(UI / "ui.css"),        "backend/ui"),
     (str(UI / "publish.css"),   "backend/ui"),
     (str(UI / "suksukidx.ico"), "backend/ui"),
+    *collect_tree(UI / "master", "backend/ui/master"),
     # Native tools (portable)
     (str(BIN / "ffmpeg.exe"), "backend/bin"),
     (str(BIN / "poppler"),   "backend/bin/poppler"),

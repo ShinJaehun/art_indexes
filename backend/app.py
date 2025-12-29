@@ -172,6 +172,8 @@ def main():
     # 가드 통과 후에만 로깅/리소스 준비
     logger = _setup_logging(base_dir)
 
+    logger.info("[app] frozen=%s executable=%s", getattr(sys, "frozen", False), sys.executable)
+
     # logs/resource 루트 자동 생성
     resource_dir = base_dir / RESOURCE_DIR
     _ensure_dir(resource_dir)
@@ -229,4 +231,7 @@ def main():
 
 
 if __name__ == "__main__":
+    if getattr(sys, "frozen", False):
+        import multiprocessing as mp
+        mp.freeze_support()
     main()

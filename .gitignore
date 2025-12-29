@@ -65,7 +65,9 @@ desktop.ini
 !.gitignore
 !.gitattributes
 !.editorconfig
-
+# vscode workspace 설정 파일은 필요!
+!.vscode/
+!.vscode/settings.json
 
 # runtime logs
 logs/

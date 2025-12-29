@@ -1,0 +1,10 @@
+{
+    "[javascript]": {
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "vscode.typescript-language-features"
+      },
+      "[python]": {
+        "editor.formatOnSave": false,
+        "editor.defaultFormatter": "ms-python.black-formatter"
+      }
+}

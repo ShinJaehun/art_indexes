@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Dict, Any, Union, List, Optional, Tuple
 import re
+import glob
 import time
 import os
 import traceback
@@ -1233,12 +1234,76 @@ class MasterApi:
         self._write(self._p_master_content(), new_html)
         return {"ok": True, "added": len(blocks)}
 
+    # ---- 산출물 정리(카드 삭제용) ----------------------------------------
+    def _cleanup_folder_artifacts(self, folder_path: Path) -> Dict[str, Any]:
+        """
+        원본 자료는 삭제하지 않고, 산출물만 정리한다.
+
+        정리 대상(폴더 내부):
+          - index.html
+          - thumbs/ (폴더째)
+          - master.*.css / master.css (폴더에 배포된 경우)
+
+        정리하지 않는 것:
+          - 원본 자료(PDF/이미지/영상 등)
+          - .suksukidx.id (폴더 식별자: rename/재-sync 안정성을 위해 유지)
+        """
+        cleaned = {
+            "child_index_deleted": False,
+            "thumbs_dir_deleted": False,
+            "css_deleted": 0,
+        }
+
+        if not folder_path.exists() or not folder_path.is_dir():
+            return cleaned
+
+        # 1) child index.html
+        child_index = folder_path / "index.html"
+        try:
+            if child_index.exists() and child_index.is_file():
+                child_index.unlink()
+                cleaned["child_index_deleted"] = True
+        except Exception:
+            pass
+
+        # 2) thumbs/ 디렉토리
+        thumbs_dir = folder_path / "thumbs"
+        try:
+            if thumbs_dir.exists() and thumbs_dir.is_dir():
+                shutil.rmtree(thumbs_dir)
+                cleaned["thumbs_dir_deleted"] = True
+        except Exception:
+            pass
+
+        # 3) 폴더에 배포된 css 정리 (master.<HASH>.css / master.css)
+        try:
+            # master.<HASH>.css
+            for p in folder_path.glob(f"{CSS_PREFIX}.*.css"):
+                try:
+                    if p.is_file():
+                        p.unlink()
+                        cleaned["css_deleted"] += 1
+                except Exception:
+                    pass
+            # master.css (fallback)
+            plain = folder_path / f"{CSS_PREFIX}.css"
+            if plain.exists() and plain.is_file():
+                try:
+                    plain.unlink()
+                    cleaned["css_deleted"] += 1
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        return cleaned
+
     # ---- 카드 삭제 (ID 기준, 즉시 삭제) ----
     def delete_card_by_id(self, card_id: str) -> Dict[str, Any]:
         """
         data-card-id 기반으로 카드를 즉시 삭제한다.
         - master_content.html에서 해당 .card 블록 제거
-        - resource/<folder> 폴더 삭제
+        - resource/<folder> 내 산출물(index.html / thumbs / 배포 css) 정리 (원본 폴더/원본 자료는 유지)
         - master_index.html / child index 재생성(_push_master_to_resource)
 
         UI에서는 폴더/제목이 아니라 card_id(예: .suksukidx.id)를 넘겨야 한다.
@@ -1334,29 +1399,14 @@ class MasterApi:
                     folder_name = cand
                     break
 
-        deleted_folder = False
+        cleaned_artifacts: Dict[str, Any] = {
+            "child_index_deleted": False,
+            "thumbs_dir_deleted": False,
+            "css_deleted": 0,
+        }
         removed_from_master = False
 
-        # 4) 파일시스템 폴더 삭제
-        if folder_name:
-            folder_path = resource_dir / folder_name
-            try:
-                if folder_path.exists() and folder_path.is_dir():
-                    shutil.rmtree(folder_path)
-                    deleted_folder = True
-                else:
-                    log.warning("[delete] folder not found or not a dir: %s", str(folder_path))
-
-            except Exception as exc:
-                msg = f"폴더 삭제 실패: {exc}"
-                log.error("[delete] %s", msg)
-                errors.append(msg)
-        else:
-            msg = "폴더명을 결정할 수 없어 파일시스템 삭제를 건너뜁니다."
-            log.warning("[delete] %s", msg)
-            errors.append(msg)
-
-        # 5) master_content에서 카드 블록 제거
+        # 4) master_content에서 카드 블록 제거
         try:
             target.decompose()
             self._write(master_content, str(soup))
@@ -1366,7 +1416,7 @@ class MasterApi:
             log.error("[delete] %s", msg)
             errors.append(msg)
 
-        # 6) master_index / child index 재빌드
+        # 5) master_index / child index 재빌드
         push_ok = True
         try:
             self._push_master_to_resource()
@@ -1374,6 +1424,23 @@ class MasterApi:
             push_ok = False
             msg = f"인덱스 재생성(_push_master_to_resource) 실패: {exc}"
             log.error("[delete] %s", msg)
+            errors.append(msg)
+
+        # 6) 파일시스템 산출물 정리
+        if folder_name:
+            folder_path = resource_dir / folder_name
+            try:
+                if folder_path.exists() and folder_path.is_dir():
+                    cleaned_artifacts = self._cleanup_folder_artifacts(folder_path)
+                else:
+                    log.warning("[delete] folder not found or not a dir: %s", str(folder_path))
+            except Exception as exc:
+                msg = f"산출물 정리 실패: {exc}"
+                log.error("[delete] %s", msg)
+                errors.append(msg)
+        else:
+            msg = "폴더명을 결정할 수 없어 산출물 정리를 건너뜁니다."
+            log.warning("[delete] %s", msg)
             errors.append(msg)
 
         # 7) 레지스트리에서 이 card_id 제거 (master에서 제거된 경우에만)
@@ -1393,7 +1460,7 @@ class MasterApi:
             "card_id": card_id,
             "folder": folder_name,
             "removed_from_master": removed_from_master,
-            "deleted_folder": deleted_folder,
+            "cleaned_artifacts": cleaned_artifacts,
             "pushOk": push_ok,
         }
         if errors:

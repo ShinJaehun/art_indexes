@@ -328,8 +328,15 @@ window.enhanceBlocks = function enhanceBlocks() {
                 }
 
                 const ok = confirm(
-                    `정말 삭제할까요?\n\n- 제목: ${cardTitle}\n- ID: ${cardId}\n\n폴더 및 자료가 영구 삭제됩니다.`
+                    `정말 삭제할까요?\n\n- 제목: ${cardTitle}\n- ID: ${cardId}\n\n` +
+                    `삭제되는 것은 '카드/인덱스 산출물'입니다.\n` +
+                    `- master_content / master_index의 카드 정보\n` +
+                    `- resource/${cardTitle}/index.html\n` +
+                    `- resource/${cardTitle}/thumbs/ (썸네일)\n` +
+                    `- resource/${cardTitle}/master.*.css (배포된 경우)\n\n` +
+                    `원본 자료 파일은 삭제되지 않으며, Sync를 하면 다시 카드가 생성될 수 있습니다.`
                 );
+
                 if (!ok) return;
 
                 try {

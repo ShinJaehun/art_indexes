@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>쑥쑥인덱스 사용 설명서</title>
+  <style>
+    :root{
+      --bg:#0b0f19; --card:#121a2a; --text:#e9eefc; --muted:#a9b6d3;
+      --accent:#7aa2ff; --accent2:#7dffcf; --warn:#ffcc66; --danger:#ff6b6b;
+      --border:rgba(255,255,255,.10);
+    }
+    *{box-sizing:border-box}
+    body{
+      margin:0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans KR", Arial, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+      background:linear-gradient(180deg, var(--bg), #070a12 55%, #050712);
+      color:var(--text);
+    }
+    a{color:var(--accent); text-decoration:none}
+    a:hover{text-decoration:underline}
+    .wrap{max-width:980px; margin:0 auto; padding:28px 18px 60px}
+    header{
+      border:1px solid var(--border);
+      background:linear-gradient(135deg, rgba(122,162,255,.16), rgba(125,255,207,.08));
+      border-radius:16px;
+      padding:22px 20px;
+      box-shadow: 0 12px 40px rgba(0,0,0,.35);
+    }
+    h1{margin:0 0 6px; font-size:26px}
+    .sub{color:var(--muted); line-height:1.5}
+    .meta{
+      margin-top:14px; display:flex; gap:10px; flex-wrap:wrap
+    }
+    .pill{
+      display:inline-flex; gap:8px; align-items:center;
+      padding:7px 10px; border-radius:999px;
+      border:1px solid var(--border); background:rgba(255,255,255,.04);
+      color:var(--muted); font-size:13px;
+    }
+    main{margin-top:18px}
+    section{
+      margin-top:14px;
+      border:1px solid var(--border);
+      background:rgba(18,26,42,.72);
+      border-radius:16px;
+      padding:18px 18px;
+      box-shadow: 0 12px 40px rgba(0,0,0,.25);
+    }
+    h2{margin:0 0 10px; font-size:18px}
+    h3{margin:18px 0 8px; font-size:15px; color:#dbe6ff}
+    p, li{color:var(--text); line-height:1.65}
+    ul{margin:8px 0 0 20px; padding:0}
+    .note{color:var(--muted)}
+    .callout{
+      border:1px solid var(--border);
+      border-left:4px solid var(--accent);
+      background:rgba(122,162,255,.10);
+      border-radius:12px;
+      padding:12px 12px;
+      margin-top:12px;
+      color:var(--text);
+    }
+    .callout.warn{border-left-color:var(--warn); background:rgba(255,204,102,.10)}
+    .callout.danger{border-left-color:var(--danger); background:rgba(255,107,107,.10)}
+    code, .kbd{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 0.95em;
+      padding:2px 6px;
+      border:1px solid var(--border);
+      border-radius:8px;
+      background:rgba(255,255,255,.04);
+      color:#e9eefc;
+      white-space:nowrap;
+    }
+    .img{
+      margin-top:12px;
+      border:1px solid var(--border);
+      border-radius:14px;
+      overflow:hidden;
+      background:rgba(0,0,0,.25);
+    }
+    .img img{display:block; width:100%; height:auto}
+    .img .cap{
+      padding:10px 12px;
+      color:var(--muted);
+      font-size:13px;
+      border-top:1px solid var(--border);
+      background:rgba(0,0,0,.20);
+    }
+    .grid2{
+      display:grid;
+      grid-template-columns: 1fr;
+      gap:12px;
+    }
+    @media (min-width: 900px){
+      .grid2{grid-template-columns: 1fr 1fr;}
+    }
+    footer{
+      margin-top:18px;
+      color:var(--muted);
+      font-size:13px;
+      text-align:center;
+    }
+    .toc{
+      display:grid; grid-template-columns:1fr; gap:10px;
+      margin-top:12px;
+    }
+    @media (min-width: 820px){
+      .toc{grid-template-columns:1fr 1fr;}
+    }
+    .toc a{
+      display:block; padding:10px 12px;
+      border:1px solid var(--border); border-radius:12px;
+      background:rgba(255,255,255,.03);
+      color:var(--text);
+    }
+    .toc a span{color:var(--muted); font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>쑥쑥인덱스 사용 설명서</h1>
+      <div class="sub">
+        이 문서는 <b>Windows portable</b> 형태로 배포된 <b>suksukidx.exe</b>를 사용해
+        <b>resource</b> 폴더에 있는 수업 자료를 카드 형태로 정리하고, 인덱스 HTML을 생성·갱신하는 방법을 안내합니다.
+      </div>
+      <div class="meta">
+        <div class="pill">📌 대상: 학교 선생님</div>
+        <div class="pill">🧩 구성: suksukidx.exe + _internal + resource</div>
+        <div class="pill">🗂️ 로그: <code>suksukidx/logs/suksukidx.log</code></div>
+      </div>
+
+      <div class="toc" aria-label="목차">
+        <a href="#principle"><b>1. 동작 원리</b><br><span>sync / 편집 / 인덱스 생성 흐름</span></a>
+        <a href="#howto"><b>2. 실행 방법</b><br><span>협의실 PC / zip 배포본 사용법</span></a>
+        <a href="#toolbar"><b>3. 툴박스 기능</b><br><span>Sync / 편집 / 저장 / 초기화 / 정렬</span></a>
+        <a href="#card"><b>4. 카드 기능</b><br><span>편집/저장/취소/썸네일/숨김/열기/삭제</span></a>
+        <a href="#issues"><b>5. 실행 중 문제</b><br><span>Defender / AhnLab 분석 / 네트워크 경로</span></a>
+        <a href="#request"><b>6. 선생님들께 부탁</b><br><span>문제 제보 시 로그 첨부</span></a>
+      </div>
+
+      <div class="callout warn">
+        <b>중요:</b> 네트워크 공유 폴더(예: 아라 드라이브)에서 <code>suksukidx.exe</code>를 직접 실행하지 마세요.
+        반드시 PC의 로컬 폴더로 복사한 뒤 실행하세요.
+      </div>
+    </header>
+
+    <main>
+      <section id="principle">
+        <h2>1. 동작 원리</h2>
+        <h3>1) Sync를 하면</h3>
+        <ul>
+          <li><b>resource</b> 폴더 안의 각 하위 폴더를 스캔하여 카드 정보를 캐시에 생성합니다.</li>
+          <li><code>resource/master_index.html</code>에 전체 카드 목록(마스터 인덱스)을 생성/갱신합니다.</li>
+          <li><code>resource/&lt;각 폴더&gt;/index.html</code>에 해당 폴더의 카드 정보를 생성/갱신합니다.</li>
+        </ul>
+
+        <h3>2) 실행 중 카드 정보를 편집하면</h3>
+        <ul>
+          <li>카드의 캐시 정보가 갱신되고, 변경 사항이 마스터 인덱스/각 폴더 인덱스에 반영됩니다.</li>
+          <li>카드 단위 저장 시 해당 카드 범위의 동기화가 일어나므로, 보통 전체 Sync를 매번 할 필요는 없습니다.</li>
+        </ul>
+      </section>
+
+      <section id="howto">
+        <h2>2. 실행 방법</h2>
+
+        <h3>1) 협의실 컴퓨터(4학년 미술 수업 자료 포함 패키지)</h3>
+        <p>
+          바탕화면의 <b>suksukidx</b> 폴더에서 <b>suksukidx.exe</b>를 실행하면 됩니다.
+          USB로 <b>suksukidx</b> 폴더 전체를 복사해 선생님 컴퓨터의 적당한 위치로 옮겨 사용할 수 있습니다.
+        </p>
+        <ul>
+          <li><b>권장 위치</b>: 예) <code>C:\Users\(사용자)\Documents\suksukidx</code></li>
+          <li><b>피해야 할 위치</b>: <code>C:\Program Files</code>, <code>C:\Windows</code> 등 특수 권한이 필요한 폴더</li>
+          <li><b>사용 흐름</b>: <code>resource</code> 폴더에 자료 추가 → 쑥쑥인덱스에서 <b>Sync</b></li>
+        </ul>
+
+        <h3>2) 다른 학년 선생님(자료 미포함 zip 배포본)</h3>
+        <p class="note">
+          아라드라이브 &gt; 4학년 &gt; 09.기타자료에 올려둔 <b>suksukidx.zip</b>을 사용합니다.
+          (여기에는 4학년 미술 수업 자료가 포함되어 있지 않습니다.)
+        </p>
+        <ol>
+          <li><b>suksukidx.zip</b>을 선생님 PC의 로컬 폴더로 복사합니다.</li>
+          <li>압축을 해제하면 <b>suksukidx.exe</b>와 <b>_internal</b> 폴더가 보입니다.</li>
+          <li><b>suksukidx.exe</b>를 1회 실행하면 <b>resource</b> 폴더가 자동 생성됩니다.</li>
+          <li><b>resource</b> 폴더에 자료를 넣고, 쑥쑥인덱스에서 <b>Sync</b>합니다.</li>
+        </ol>
+
+        <div class="img">
+          <img src="./img/pic2.png" alt="pic2" />
+          <div class="cap">pic.2 — zip 배포본 압축 해제 후 구성</div>
+        </div>
+      </section>
+
+      <section id="toolbar">
+        <h2>3. 툴박스 기능</h2>
+        <p>툴박스에는 <b>Sync(썸네일/인덱스 갱신)</b>, <b>편집 모드</b>, <b>전체 저장</b>, <b>전체 초기화</b>, <b>정렬</b> 버튼이 있습니다.</p>
+
+        <ul>
+          <li><b>Sync</b>: 인덱스를 생성하거나 갱신합니다.</li>
+          <li><b>편집 모드</b>: 전체 카드를 동시에 편집할 수 있습니다.</li>
+          <li><b>전체 저장</b>: 편집 모드에서 입력한 내용을 저장합니다.</li>
+          <li><b>전체 초기화</b>: 레지스트리, 인덱스 정보, CSS 파일, 썸네일 폴더/파일을 모두 삭제합니다.
+            <br><span class="note">※ 실제 자료 파일은 삭제하지 않고, “카드에 입력해 둔 정보/생성된 인덱스”만 초기화됩니다.</span>
+          </li>
+        </ul>
+
+        <div class="img">
+          <img src="./img/pic3.png" alt="pic3" />
+          <div class="cap">pic.3 — 툴박스(상단 버튼) 위치 예시</div>
+        </div>
+      </section>
+
+      <section id="card">
+        <h2>4. 카드 기능</h2>
+        <p>각 카드에는 <b>편집</b>, <b>저장</b>, <b>취소</b>, <b>썸네일 갱신</b>, <b>숨김</b>, <b>폴더 열기</b>, <b>삭제</b> 버튼이 있습니다.</p>
+
+        <div class="grid2">
+          <div class="callout">
+            <b>편집</b>: 카드에 정보를 입력합니다.<br>
+            <b>저장</b>: 입력한 정보를 저장합니다. (카드별 sync 포함)
+          </div>
+          <div class="callout">
+            <b>취소</b>: 편집 과정을 취소합니다.<br>
+            <b>숨김</b>: 마스터 인덱스에서 해당 카드를 제외합니다.
+          </div>
+          <div class="callout warn">
+            <b>썸네일 갱신</b>: 폴더 내 <b>이미지 → PDF/동영상</b> 순으로 썸네일을 생성합니다.<br>
+            자동 캡처가 마음에 들지 않으면, 원하는 썸네일 이미지를 폴더에 넣고 <b>썸네일 갱신</b>을 누르세요.
+          </div>
+          <div class="callout danger">
+            <b>삭제</b>: 실제 폴더를 삭제하는 기능이 아닙니다.<br>
+            Sync가 생성한 “인덱스 정보(카드 출력용)”를 삭제하는 버튼입니다.
+          </div>
+        </div>
+
+        <div class="img">
+          <img src="./img/pic4.png" alt="pic4" />
+          <div class="cap">pic.4 — 카드 버튼(편집/저장/취소/썸네일/숨김/열기/삭제) 예시</div>
+        </div>
+      </section>
+
+      <section id="issues">
+        <h2>5. 실행 과정에서 발생할 수 있는 문제</h2>
+
+        <h3>1) Defender가 실행을 제한하는 경우</h3>
+        <p><b>“추가 정보”</b>를 클릭하고 <b>“실행”</b> 버튼이 활성화되면 클릭해서 실행하세요.</p>
+
+        <div class="grid2">
+          <div class="img">
+            <img src="./img/pic5.png" alt="pic5" />
+            <div class="cap">pic.5 — Windows Defender 경고 화면 예시</div>
+          </div>
+          <div class="img">
+            <img src="./img/pic6.png" alt="pic6" />
+            <div class="cap">pic.6 — “추가 정보” 후 실행 버튼 활성화 예시</div>
+          </div>
+        </div>
+
+        <h3>2) 실행/Sync가 느리거나 멈춘 것처럼 보이는 경우 (AhnLab MDS Agent)</h3>
+        <p>
+          교육청 네트워크에 연결된 컴퓨터에서는 실행 파일을 실행하면 실시간으로 분석하여 악성 코드 유무를 검토할 수 있습니다.
+          <b>suksukidx.exe</b> 또는 PDF/동영상 캡처 도구를 검토하는 과정이며, 보통 <b>각 컴퓨터에서 처음 실행될 때 1회</b>만 발생합니다.
+          다음 실행부터는 지연이 크게 줄어들 수 있습니다.
+        </p>
+
+        <h3>3) 네트워크 공유 폴더에서 실행하지 마세요</h3>
+        <div class="callout danger">
+          네트워크 공유 폴더(아라 드라이브 등)에서는 경로 인식 문제로 <b>unhandled exception</b>이 발생할 수 있습니다.
+          반드시 zip 파일을 <b>로컬 폴더로 복사</b> → <b>압축 해제</b> → <b>suksukidx.exe 실행</b> 순서로 사용하세요.
+        </div>
+      </section>
+
+      <section id="request">
+        <h2>6. 선생님들께 드리는 부탁</h2>
+        <p>
+          사용 중 문제가 발생하면 제게 쪽지로 알려주세요. 이때
+          <b>구체적인 증상</b>과 <b>로그 정보</b>를 함께 첨부해 주시면 원인 파악에 큰 도움이 됩니다.
+        </p>
+        <ul>
+          <li>“안 돼요”만 적으면 원인 추적이 어렵습니다. (윈도우 개발 환경에서 발생할 수 있는 문제의 원인이 다양합니다.)</li>
+          <li>로그 파일 경로: <code>suksukidx/logs/suksukidx.log</code></li>
+          <li>가능하면 “언제/무슨 버튼을 눌렀는지/무슨 화면에서 멈췄는지”를 같이 적어 주세요.</li>
+        </ul>
+      </section>
+
+    </main>
+  </div>
+</body>
+</html>
